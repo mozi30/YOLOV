@@ -21,13 +21,13 @@ class Exp(MyExp):
         self.data_dir = Path.home() / "datasets" / "visdrone" /"yolov" #set your dataset path
         self.train_ann = "imagenet_vid_train.json" #set your train annotation file
         self.val_ann = "imagenet_vid_val.json" #set your val annotation file
-        self.max_epoch = 7
+        self.max_epoch = 80
         self.pre_no_aug = 0
-        self.no_aug_epochs = 2
-        self.warmup_epochs = 1
+        self.no_aug_epochs = 10
+        self.warmup_epochs = 3
         self.eval_interval = 1
         self.min_lr_ratio = 0.05
-        self.basic_lr_per_img = 0.001 / 64.0
+        self.basic_lr_per_img = 0.01 / 64.0
         self.input_size = (640, 960)
         self.test_size = (640, 960)
         self.test_conf = 0.001
@@ -134,7 +134,7 @@ class Exp(MyExp):
         dataset = vid.VisDroneVID_JSON(
             data_dir=self.data_dir,                 # e.g., ~/datasets/visdrone/yolov
             json_file=os.path.join(self.data_dir,"annotations", self.train_ann),  # your visdrone_train.json
-            name='train',                           # folder name under data_dir
+            name='Data/VID',                           # folder name under data_dir
             img_size=self.input_size,
             preproc=TrainTransform(max_labels=50, flip_prob=self.flip_prob, hsv_prob=self.hsv_prob),
             lframe=self.lframe,
@@ -155,7 +155,7 @@ class Exp(MyExp):
         dataset_val = vid.VisDroneVID_JSON(
             data_dir=self.data_dir,
             json_file=os.path.join(self.data_dir,"annotations", self.val_ann),
-            name='val',
+            name='Data/VID',
             img_size=self.test_size,
             preproc=Vid_Val_Transform(),
             lframe=self.lframe_val,
