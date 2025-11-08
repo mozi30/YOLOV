@@ -2,6 +2,7 @@
 # -*- coding:utf-8 -*-
 # Copyright (c) Megvii, Inc. and its affiliates.
 import copy
+import json
 import os
 import random
 
@@ -11,6 +12,7 @@ from loguru import logger
 import cv2
 import numpy as np
 import torch
+#from torch.utils.data import Dataset
 from torch.utils.data.dataset import Dataset as torchDataset
 from torch.utils.data.sampler import Sampler,BatchSampler,SequentialSampler
 from xml.dom import minidom
@@ -22,6 +24,225 @@ XML_EXT = [".xml"]
 name_list = ['n02691156','n02419796','n02131653','n02834778','n01503061','n02924116','n02958343','n02402425','n02084071','n02121808','n02503517','n02118333','n02510455','n02342885','n02374451','n02129165','n01674464','n02484322','n03790512','n02324045','n02509815','n02411705','n01726692','n02355227','n02129604','n04468005','n01662784','n04530566','n02062744','n02391049']
 numlist = range(30)
 name_num = dict(zip(name_list,numlist))
+
+
+class VisDroneVID_JSON(torchDataset):
+    """
+    VisDrone-VID loader for the schema:
+
+    {
+      "info": {...},
+      "videos": [
+        {
+          "id": int, "width": int, "height": int, "length": int,
+          "file_names": [str, ... length items]
+        }, ...
+      ],
+      "annotations": [
+        {
+          "id": int, "video_id": int, "category_id": int,
+          "areas": [float or None, ... length items],
+          "bboxes": [[x,y,w,h] or None, ... length items],
+          "iscrowd": 0/1
+        }, ...
+      ] or None,
+      "categories": [{"id": int, "name": str, "supercategory": str}, ...]
+    }
+    """
+
+    def __init__(
+        self,
+        data_dir,
+        json_file,          # path to the json described above
+        name="train",       # split subfolder
+        img_size=(640, 640),
+        preproc=None,
+        lframe=0,
+        gframe=16,
+        mode="random",      # "random" | "uniform" | "gl"
+        val=False,
+    ):
+        super().__init__()
+        self.data_dir = data_dir
+        self.name = name
+        self.img_size = img_size
+        self.preproc = preproc
+        self.lframe = lframe
+        self.gframe = gframe
+        self.mode = mode
+        self.val = val
+
+        with open(json_file, "r") as f:
+            jd = json.load(f)
+
+        self.videos = jd.get("videos", [])
+        self.annotations_raw = jd.get("annotations", None)
+        cats = jd.get("categories", [])
+        # contiguous class id map: cat_id -> [0..C-1]
+        cat_ids_sorted = sorted([c["id"] for c in cats])
+        self.catid2cid = {cid: i for i, cid in enumerate(cat_ids_sorted)}
+        self.class_ids = cat_ids_sorted
+        self._classes = tuple([c["name"] for c in sorted(cats, key=lambda x: x["id"])])
+
+        # ---- build frame index and per-frame annotation map
+        # frame_index: list of dicts with keys:
+        #   {"key": (video_id, frame_idx), "file_name": str, "width": int, "height": int}
+        self.frame_index = []
+        # ann_map[(video_id, frame_idx)] -> list of dicts: {"bbox": [x1,y1,x2,y2], "cid": contiguous class id}
+        self.ann_map = {}
+
+        # Quick index: video_id -> video dict
+        self.vid_by_id = {v["id"]: v for v in self.videos}
+
+        for v in self.videos:
+            W, H, L = v["width"], v["height"], v["length"]
+            files = v["file_names"]
+            assert len(files) == L, f"video {v['id']} file_names length mismatch: {len(files)} vs length {L}"
+            for k in range(L):
+                self.frame_index.append({
+                    "key": (v["id"], k),
+                    "file_name": files[k],
+                    "width": W,
+                    "height": H,
+                })
+                self.ann_map[(v["id"], k)] = []  # will fill below
+
+        # Fill per-frame annotations if provided
+        if self.annotations_raw is not None:
+            for ann in self.annotations_raw:
+                vid = ann["video_id"]
+                cid = self.catid2cid[ann["category_id"]]
+                bboxes = ann.get("bboxes", [])
+                # areas optional; not needed for training
+                L = self.vid_by_id[vid]["length"]
+                # Be robust to missing/short arrays
+                for k in range(min(L, len(bboxes))):
+                    bb = bboxes[k]
+                    if bb is None:
+                        continue
+                    x, y, w, h = bb
+                    x1, y1 = max(0, x), max(0, y)
+                    x2 = min(self.vid_by_id[vid]["width"],  x + max(0, w))
+                    y2 = min(self.vid_by_id[vid]["height"], y + max(0, h))
+                    if x2 >= x1 and y2 >= y1:
+                        self.ann_map[(vid, k)].append({
+                            "bbox": [x1, y1, x2, y2],
+                            "cid": cid
+                        })
+
+        # ---- Build sequences of file_names for sampling modes (like your other datasets)
+        # dataset_sequences is a list; each item is a list[str] (frame file paths for one video)
+        self.dataset_sequences = []
+        for v in self.videos:
+            self.dataset_sequences.append(list(v["file_names"]))  # keep original order
+
+        # ---- Build list of clips/res according to mode (like OVIS/Arg_VID)
+        self.res = self.photo_to_sequence(self.lframe, self.gframe)
+
+        # Optional: name->(video_id, frame_idx) mapping for quick index by file_name (if you need it)
+        self.name_key_map = {}
+        for fi in self.frame_index:
+            self.name_key_map[fi["file_name"]] = fi["key"]
+
+    def __len__(self):
+        return len(self.res)
+
+    # -------- sampling clips, same logic pattern as your classes
+    def photo_to_sequence(self, lframe, gframe):
+        res = []
+        for seq in self.dataset_sequences:
+            ele_len = len(seq)
+            if ele_len < max(1, lframe + gframe):
+                continue
+
+            if self.mode == "random":
+                if lframe == 0:
+                    split_num = ele_len // gframe
+                    tmp = seq[:]  # avoid in-place shuffle of source
+                    random.shuffle(tmp)
+                    for i in range(split_num):
+                        res.append(tmp[i * gframe:(i + 1) * gframe])
+                    tail = tmp[split_num * gframe:]
+                    if self.val and len(tail):
+                        res.append(tail)
+                else:
+                    split_num = ele_len // lframe
+                    all_local = seq[:split_num * lframe]
+                    for i in range(split_num):
+                        l_clip = all_local[i * lframe:(i + 1) * lframe]
+                        others = seq[:i * lframe] + seq[(i + 1) * lframe:]
+                        g_clip = random.sample(others, gframe) if gframe > 0 and len(others) >= gframe else []
+                        res.append(l_clip + g_clip)
+
+            elif self.mode == "uniform":
+                split_num = ele_len // max(1, gframe)
+                all_uniform = seq[:split_num * gframe]
+                for i in range(split_num):
+                    res.append(all_uniform[i::split_num])
+
+            elif self.mode == "gl":
+                split_num = ele_len // max(1, lframe)
+                all_local = seq[:split_num * lframe]
+                for i in range(split_num):
+                    l_clip = all_local[i * lframe:(i + 1) * lframe]
+                    others = seq[:i * lframe] + seq[(i + 1) * lframe:]
+                    g_clip = random.sample(others, gframe) if gframe > 0 and len(others) >= gframe else []
+                    res.append(l_clip + g_clip)
+            else:
+                raise ValueError(f"Unsupported mode: {self.mode}")
+
+        if self.val:
+            random.seed(42)
+            random.shuffle(res)
+            return res
+        else:
+            random.shuffle(res)
+            return res
+
+    # -------- utilities
+    def _resize_factor(self, H, W):
+        return min(self.img_size[0] / H, self.img_size[1] / W)
+
+    def _labels_for(self, file_name):
+        """Return (rescaled_labels [N,5], img_info(h,w)) for a given frame file_name."""
+        vid, k = self.name_key_map[file_name]
+        v = self.vid_by_id[vid]
+        H, W = v["height"], v["width"]
+        r = self._resize_factor(H, W)
+
+        anns = self.ann_map[(vid, k)]
+        num = len(anns)
+        labels = np.zeros((num, 5), dtype=np.float32)
+        for i, a in enumerate(anns):
+            x1, y1, x2, y2 = a["bbox"]
+            labels[i, 0:4] = [x1 * r, y1 * r, x2 * r, y2 * r]
+            labels[i, 4] = a["cid"]
+        return labels, (H, W)
+
+    # -------- PyTorch Dataset API compatible with your collate fns
+    def pull_item(self, path):
+        """
+        path: relative file_name (one element from self.res's inner lists).
+        Returns: img (resized), annos (rescaled [N,5]), img_info (H,W), returned_path (str)
+        """
+        # Absolute path
+        abs_path = os.path.join(self.data_dir, self.name, path)
+        img = cv2.imread(abs_path)
+        if img is None:
+            raise FileNotFoundError(f"Could not read image: {abs_path}")
+
+        H, W = img.shape[:2]
+        r = self._resize_factor(H, W)
+        img_resized = cv2.resize(img, (int(W * r), int(H * r)), interpolation=cv2.INTER_LINEAR).astype(np.uint8)
+
+        annos, img_info = self._labels_for(path)
+        return img_resized, annos, img_info, path
+
+    def __getitem__(self, path):
+        img, target, img_info, path = self.pull_item(path)
+        if self.preproc is not None:
+            img, target = self.preproc(img, target, self.img_size)
+        return img, target, img_info, path
 
 class VIDDataset(torchDataset):
     """
