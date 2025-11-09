@@ -1,3 +1,7 @@
+#!/usr/bin/env python3
+# -*- coding:utf-8 -*-
+# YOLOX-L VisDrone Config v2 - Improved for better performance
+
 import os
 import torch.nn as nn
 from yolox.exp import Exp as MyExp
@@ -8,6 +12,7 @@ import random
 class Exp(MyExp):
     def __init__(self):
         super(Exp, self).__init__()
+        # YOLOX-L model size
         self.depth = 1.0
         self.width = 1.0
         self.exp_name = os.path.split(os.path.realpath(__file__))[1].split(".")[0]
@@ -17,30 +22,59 @@ class Exp(MyExp):
         self.data_dir = "/root/datasets/visdrone/yolov"
         self.train_ann = "imagenet_vid_train_coco.json"
         self.val_ann = "imagenet_vid_val_coco.json"
+        
+        # === IMPROVED TRAINING CONFIGURATION ===
+        # Extended training for better convergence
+        self.max_epoch = 75  # 40 + 35 additional epochs
+        self.no_aug_epochs = 10  # Increased from 5
+        self.warmup_epochs = 5  # Increased from 2
+        self.eval_interval = 1  # Validate after every epoch
+        
+        # Lower learning rate for stability
+        self.min_lr_ratio = 0.01  # Decreased from 0.05
+        self.basic_lr_per_img = 0.005 / 64.0  # Reduced from 0.01
+        
+        # === IMPROVED INPUT RESOLUTION ===
+        # Higher resolution for better small object detection
+        # Option 1: Balanced (current) - good speed/accuracy trade-off
+        self.input_size = (608, 1088)
+        self.test_size = (608, 1088)
+        
+        # Option 2: High resolution (uncomment for best accuracy)
+        # self.input_size = (768, 1344)  # Native VisDrone resolution
+        # self.test_size = (768, 1344)
+        # Note: This will be 2-3x slower but much better for small objects
+        
+        # Multi-scale training range
+        self.multiscale_range = 6  # Increased from 5
+        
+        # === IMPROVED DATA AUGMENTATION ===
+        # Stronger augmentation for aerial view variations
+        self.degrees = 15.0  # Increased rotation from 10.0
+        self.translate = 0.2  # Increased translation from 0.1
+        self.mosaic_scale = (0.5, 1.5)  # More conservative than default (0.1, 2.0)
+        self.shear = 2.5  # Increased from 2.0
+        
+        # Mixup augmentation
+        self.enable_mixup = True
+        self.mixup_prob = 0.15  # Probability of applying mixup
+        self.mixup_scale = (0.8, 1.6)
+        
+        # HSV augmentation for varying lighting conditions
+        self.hsv_prob = 1.0
+        
+        # Mosaic probability
+        self.mosaic_prob = 1.0
+        
+        # === TEST CONFIGURATION ===
+        self.test_conf = 0.001  # Confidence threshold
+        self.nmsthre = 0.5  # NMS threshold
+        
+        # === EMA (Exponential Moving Average) ===
+        self.ema = True  # Enable model EMA for better stability
 
-        # Training configuration for pretraining
-        self.max_epoch = 80
-        self.no_aug_epochs = 10
-        self.warmup_epochs = 3
-        self.eval_interval = 5
-        self.min_lr_ratio = 0.05
-        self.basic_lr_per_img = 0.01 / 64.0
-        
-        # Input sizes for VisDrone (native: 1344x756, aspect ratio 16:9)
-        # Optimal balance: preserves small objects while being computationally efficient
-        self.input_size = (640, 1152)  # ~48% downscale, maintains aspect ratio
-        self.test_size = (640, 1152)   # 20px objects → 17px (still detectable)
-        self.test_conf = 0.001
-        self.nmsthre = 0.5
-        
-        # Swin Transformer configuration
-        self.backbone_name = "swin_base"  # Options: swin_tiny, swin_small, swin_base
-        self.pretrained = True  # Use ImageNet pretrained weights
-        self.pretrain_img_size = 224  # ImageNet pretrain size
-        self.window_size = 7  # Swin window size
-        
     def get_model(self):
-        from yolox.models import YOLOX, YOLOPAFPN_Swin
+        from yolox.models import YOLOX, YOLOPAFPN
         from yolox.models.yolo_head import YOLOXHead
         
         def init_yolo(M):
@@ -50,24 +84,10 @@ class Exp(MyExp):
                     m.momentum = 0.03
 
         if getattr(self, "model", None) is None:
-            # Swin Base configuration
             in_channels = [256, 512, 1024]
-            out_channels = [256, 512, 1024]
             
-            backbone = YOLOPAFPN_Swin(
-                in_channels=in_channels,
-                out_channels=out_channels,
-                act=self.act,
-                in_features=(1, 2, 3),
-                swin_depth=[2, 2, 18, 2],
-                num_heads=[4, 8, 16, 32],
-                base_dim=int(in_channels[0] / 2),  # 128 for Swin Base
-                pretrain_img_size=self.pretrain_img_size,
-                window_size=self.window_size,
-                width=self.width,
-                depth=self.depth
-            )
-            
+            # Standard YOLOX-L backbone (CSPDarknet)
+            backbone = YOLOPAFPN(self.depth, self.width, in_channels=in_channels, act=self.act)
             head = YOLOXHead(self.num_classes, self.width, in_channels=in_channels, act=self.act)
             self.model = YOLOX(backbone, head)
 
@@ -97,7 +117,7 @@ class Exp(MyExp):
         input_size = (tensor[0].item(), tensor[1].item())
         return input_size
 
-    def get_data_loader(self, batch_size, is_distributed, no_aug=False, cache_img=True):
+    def get_data_loader(self, batch_size, is_distributed, no_aug=False, cache_img=False):
         from yolox.data import (
             TrainTransform,
             YoloBatchSampler,
@@ -166,22 +186,20 @@ class Exp(MyExp):
         return train_loader
 
     def get_eval_loader(self, batch_size, is_distributed, testdev=False, legacy=False):
-        from yolox.data import ValTransform
+        from yolox.data import YoloBatchSampler, DataLoader, InfiniteSampler, ValTransform
         from yolox.data.datasets.visdrone import VisdroneDataset
-        
+
         valdataset = VisdroneDataset(
             data_dir=self.data_dir,
             json_file=self.val_ann,
-            name="val",
+            name='val',
             img_size=self.test_size,
             preproc=ValTransform(legacy=legacy),
         )
 
         if is_distributed:
             batch_size = batch_size // dist.get_world_size()
-            sampler = torch.utils.data.distributed.DistributedSampler(
-                valdataset, shuffle=False
-            )
+            sampler = torch.utils.data.distributed.DistributedSampler(valdataset, shuffle=False)
         else:
             sampler = torch.utils.data.SequentialSampler(valdataset)
 
@@ -191,12 +209,13 @@ class Exp(MyExp):
             "sampler": sampler,
         }
         dataloader_kwargs["batch_size"] = batch_size
-        val_loader = torch.utils.data.DataLoader(valdataset, **dataloader_kwargs)
+        val_loader = DataLoader(valdataset, **dataloader_kwargs)
 
         return val_loader
 
     def get_evaluator(self, batch_size, is_distributed, testdev=False, legacy=False):
         from yolox.evaluators import COCOEvaluator
+
         val_loader = self.get_eval_loader(batch_size, is_distributed, testdev, legacy)
         evaluator = COCOEvaluator(
             dataloader=val_loader,
