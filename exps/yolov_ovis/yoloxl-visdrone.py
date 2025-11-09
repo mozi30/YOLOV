@@ -21,47 +21,63 @@ class Exp(MyExp):
         self.data_dir = "/root/datasets/visdrone/yolov"
         self.train_ann = "imagenet_vid_train_coco.json"
         self.val_ann = "imagenet_vid_val_coco.json"
-        
-        # Training configuration for faster pretraining
-        self.max_epoch = 75  # Extended from 40 to 75 (35 more epochs)
-        self.no_aug_epochs = 10  # Extended from 5 to 10
-        self.warmup_epochs = 5  # Increased from 2 for better warmup
-        self.eval_interval = 3  # Validate after every epoch
-        self.min_lr_ratio = 0.01  # Decreased from 0.05 for longer decay
-        self.basic_lr_per_img = 0.005 / 64.0  # Reduced from 0.01 for stability
-        
-        # Multi-scale training range
-        self.multiscale_range = 6  # Increased from 5
-        
-        # Stronger augmentation for aerial view variations
-        self.degrees = 15.0  # Increased rotation from 10.0
-        self.translate = 0.2  # Increased translation from 0.1
-        self.mosaic_scale = (0.5, 1.5)  # More conservative than default
-        self.shear = 2.5  # Increased from 2.0
-        
-        # Mixup augmentation
-        self.enable_mixup = True
-        self.mixup_prob = 0.15  # Probability of applying mixup
+
+        # -------------------------------
+        # Training configuration (AP-oriented)
+        # -------------------------------
+        # Longer schedule with a no-aug tail
+        self.max_epoch = 110
+        self.warmup_epochs = 5
+        self.no_aug_epochs = 22            # last 22 epochs are no-aug
+
+        # LR scaling rule: lr = basic_lr_per_img * total_batch_size
+        # Slight bump vs default to aid convergence on tiny objects
+        self.min_lr_ratio = 0.01
+        self.basic_lr_per_img = 0.006 / 64.0
+
+        # Use L1 (YOLOX L1 regression head). If your trainer supports toggling,
+        # it’s best enabled only during the no-aug tail; otherwise keeping it on is fine.
+        self.use_l1 = True
+
+        self.eval_interval = 1
+
+        # -------------------------------
+        # Augmentation / multiscale
+        # -------------------------------
+        # Keep small objects: narrower shrink, wider range of scales
+        self.multiscale_range = 5
+        self.degrees = 10.0
+        self.translate = 0.1
+        self.mosaic_scale = (0.9, 1.3)     # protect small objects (less shrinking)
+        self.shear = 2.0
+
+        # MixUp off for sharper small-object boundaries
+        self.enable_mixup = False
+        self.mixup_prob = 0.0
         self.mixup_scale = (0.8, 1.6)
-        
+
         # HSV and mosaic augmentation
         self.hsv_prob = 1.0
         self.mosaic_prob = 1.0
-        
+
         # EMA (Exponential Moving Average)
-        self.ema = True  # Enable model EMA for better stability
-        
-        # Input sizes for VisDrone (native: 1344x756, aspect ratio 16:9)
-        # Balanced resolution for speed and accuracy
-        self.input_size = (608, 1088)  # Maintains 16:9 aspect ratio
-        self.test_size = (608, 1088)
+        self.ema = True
+
+        # -------------------------------
+        # Input sizes (≤ 1300 long edge)
+        # -------------------------------
+        # Keep H,W divisible by 32. Landscape 16:9-ish, long edge <= 1280.
+        self.input_size = (800, 1280)   # train target (H, W)
+        self.test_size  = (832, 1280)   # eval target (slightly larger H, same W)
+
+        # Inference / eval thresholds
         self.test_conf = 0.001
-        self.nmsthre = 0.5
+        self.nmsthre = 0.62             # slightly tighter NMS for crowded scenes
 
     def get_model(self):
         from yolox.models import YOLOX, YOLOPAFPN
         from yolox.models.yolo_head import YOLOXHead
-        
+
         def init_yolo(M):
             for m in M.modules():
                 if isinstance(m, nn.BatchNorm2d):
@@ -70,8 +86,6 @@ class Exp(MyExp):
 
         if getattr(self, "model", None) is None:
             in_channels = [256, 512, 1024]
-            
-            # Standard YOLOX-L backbone (CSPDarknet)
             backbone = YOLOPAFPN(self.depth, self.width, in_channels=in_channels, act=self.act)
             head = YOLOXHead(self.num_classes, self.width, in_channels=in_channels, act=self.act)
             self.model = YOLOX(backbone, head)
@@ -82,18 +96,50 @@ class Exp(MyExp):
         return self.model
 
     def random_resize(self, data_loader, epoch, rank, is_distributed):
+        """
+        Multiscale resize with a strict cap on the long edge (<= 1280).
+        Locks to fixed input_size during the no-aug fine-tuning phase.
+        """
         tensor = torch.LongTensor(2).cuda()
 
+        # Lock to fixed input during no-aug phase
+        if epoch >= (self.max_epoch - self.no_aug_epochs):
+            # Keep exactly the configured training input size for determinism
+            return self.input_size  # (800, 1280)
+
         if rank == 0:
+            # size_factor = W/H based on configured input_size
             size_factor = self.input_size[1] * 1.0 / self.input_size[0]
             if not hasattr(self, 'random_size'):
-                min_size = int(self.input_size[0] / 32) - self.multiscale_range
-                max_size = int(self.input_size[0] / 32) + self.multiscale_range
-                self.random_size = (min_size, max_size)
-            size = random.randint(*self.random_size)
-            size = (int(32 * size), 32 * int(size * size_factor))
-            tensor[0] = size[0]
-            tensor[1] = size[1]
+                base_tiles = int(self.input_size[0] / 32)
+                smin = max(1, base_tiles - self.multiscale_range)
+                smax = base_tiles + self.multiscale_range
+                self.random_size = (smin, smax)
+
+            smin, smax = self.random_size
+
+            # Ensure the long edge does not exceed 1280
+            # Long edge tiles cap
+            max_long_tiles = 1280 // 32  # 40
+            # If landscape (size_factor > 1), width is long edge: W = 32 * idx * size_factor
+            # -> idx <= max_long_tiles / size_factor
+            # If portrait-ish, height is the long edge: idx <= max_long_tiles
+            idx_cap = int(max_long_tiles / max(1.0, size_factor))
+            smax = min(smax, max(smin, idx_cap))
+
+            # Bias to larger sizes within the allowed range
+            size_idx = random.randint((smin + smax + 1) // 2, smax)
+            h = 32 * size_idx
+            w = 32 * int(size_idx * size_factor)
+
+            # Final safety: clamp width to 1280 if rounding pushes it over
+            if w > 1280:
+                w = 1280
+                # maintain /32 constraint for height as well
+                h = 32 * int(round(w / size_factor / 32))
+
+            tensor[0] = h
+            tensor[1] = w
 
         if is_distributed:
             dist.barrier()
@@ -121,7 +167,7 @@ class Exp(MyExp):
                 name='train',
                 img_size=self.input_size,
                 preproc=TrainTransform(
-                    max_labels=50,
+                    max_labels=300,          # keep crowded-scene labels
                     flip_prob=self.flip_prob,
                     hsv_prob=self.hsv_prob),
                 cache=cache_img,
@@ -132,7 +178,7 @@ class Exp(MyExp):
             mosaic=not no_aug,
             img_size=self.input_size,
             preproc=TrainTransform(
-                max_labels=120,
+                max_labels=300,          # keep crowded-scene labels
                 flip_prob=self.flip_prob,
                 hsv_prob=self.hsv_prob),
             degrees=self.degrees,
@@ -173,7 +219,7 @@ class Exp(MyExp):
     def get_eval_loader(self, batch_size, is_distributed, testdev=False, legacy=False):
         from yolox.data import ValTransform
         from yolox.data.datasets.visdrone import VisdroneDataset
-        
+
         valdataset = VisdroneDataset(
             data_dir=self.data_dir,
             json_file=self.val_ann,
