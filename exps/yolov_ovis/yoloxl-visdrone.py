@@ -45,7 +45,7 @@ class Exp(MyExp):
         # Augmentation / multiscale
         # -------------------------------
         # Keep small objects: narrower shrink, wider range of scales
-        self.multiscale_range = 5
+        self.multiscale_range = 1
         self.degrees = 10.0
         self.translate = 0.1
         self.mosaic_scale = (0.9, 1.3)     # protect small objects (less shrinking)
@@ -67,8 +67,8 @@ class Exp(MyExp):
         # Input sizes (≤ 1300 long edge)
         # -------------------------------
         # Keep H,W divisible by 32. Landscape 16:9-ish, long edge <= 1280.
-        self.input_size = (800, 1280)   # train target (H, W)
-        self.test_size  = (832, 1280)   # eval target (slightly larger H, same W)
+        self.input_size = (720, 1280)   # train target (H, W)
+        self.test_size  = (720, 1280)   # eval target (slightly larger H, same W)
 
         # Inference / eval thresholds
         self.test_conf = 0.001
@@ -108,38 +108,16 @@ class Exp(MyExp):
             return self.input_size  # (800, 1280)
 
         if rank == 0:
-            # size_factor = W/H based on configured input_size
             size_factor = self.input_size[1] * 1.0 / self.input_size[0]
             if not hasattr(self, 'random_size'):
-                base_tiles = int(self.input_size[0] / 32)
-                smin = max(1, base_tiles - self.multiscale_range)
-                smax = base_tiles + self.multiscale_range
-                self.random_size = (smin, smax)
+                min_size = int(self.input_size[0] / 32) - self.multiscale_range
+                max_size = int(self.input_size[0] / 32) + self.multiscale_range
+                self.random_size = (min_size, max_size)
+            size = random.randint(*self.random_size)
+            size = (int(32 * size), 32 * int(size * size_factor))
+            tensor[0] = size[0]
+            tensor[1] = size[1]
 
-            smin, smax = self.random_size
-
-            # Ensure the long edge does not exceed 1280
-            # Long edge tiles cap
-            max_long_tiles = 1280 // 32  # 40
-            # If landscape (size_factor > 1), width is long edge: W = 32 * idx * size_factor
-            # -> idx <= max_long_tiles / size_factor
-            # If portrait-ish, height is the long edge: idx <= max_long_tiles
-            idx_cap = int(max_long_tiles / max(1.0, size_factor))
-            smax = min(smax, max(smin, idx_cap))
-
-            # Bias to larger sizes within the allowed range
-            size_idx = random.randint((smin + smax + 1) // 2, smax)
-            h = 32 * size_idx
-            w = 32 * int(size_idx * size_factor)
-
-            # Final safety: clamp width to 1280 if rounding pushes it over
-            if w > 1280:
-                w = 1280
-                # maintain /32 constraint for height as well
-                h = 32 * int(round(w / size_factor / 32))
-
-            tensor[0] = h
-            tensor[1] = w
 
         if is_distributed:
             dist.barrier()
