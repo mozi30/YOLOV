@@ -1,0 +1,27 @@
+#!/bin/bash
+# YOLOX-Swin-Base Training Script for 8x GPU
+# Optimized for VisDrone dataset
+
+set -e
+
+HOME_DIR=/home/mozi
+cd $HOME_DIR/TemporalAttentionPlayground/YOLOV
+source $HOME_DIR/miniconda3/etc/profile.d/conda.sh
+conda activate yolox
+
+echo "Starting training..."
+echo ""
+
+
+python3 tools/train.py \
+    -n yolox_swinbase \
+    -f exps/customed_example/yolox_swinbase.py \
+    --batch-size 2 \
+    --fp16 \
+    -c $HOME_DIR/weights/yolov/yolox_swinbase_imagenetvid.pth
+
+echo ""
+echo "=========================================="
+echo "Training completed!"
+echo "Results saved to: YOLOX_outputs/yolox_swinbase/"
+echo "=========================================="

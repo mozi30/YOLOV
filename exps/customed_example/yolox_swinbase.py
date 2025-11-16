@@ -18,7 +18,7 @@ class Exp(MyExp):
 
         # VisDrone dataset configuration
         self.num_classes = 10  # VisDrone has 10 classes
-        self.data_dir = "/root/datasets/visdrone/yolov"
+        self.data_dir = "/home/mozi/datasets/visdrone/yolov"
         self.train_ann = "imagenet_vid_train_coco.json"
         self.val_ann = "imagenet_vid_val_coco.json"
 
@@ -65,10 +65,16 @@ class Exp(MyExp):
         self.test_conf = 0.02
         self.nmsthre = 0.5
 
-    def get_model(self):
-        from yolox.models import YOLOX, YOLOPAFPN
-        from yolox.models.yolo_head import YOLOXHead
+        # Swin Transformer configuration
+        self.backbone_name = "swin_base"  # Options: swin_tiny, swin_small, swin_base
+        self.pretrained = True  # Use ImageNet pretrained weights
+        self.pretrain_img_size = 224  # ImageNet pretrain size
+        self.window_size = 7  # Swin window size
 
+    def get_model(self):
+        from yolox.models import YOLOX, YOLOPAFPN_Swin
+        from yolox.models.yolo_head import YOLOXHead
+        
         def init_yolo(M):
             for m in M.modules():
                 if isinstance(m, nn.BatchNorm2d):
@@ -76,8 +82,24 @@ class Exp(MyExp):
                     m.momentum = 0.03
 
         if getattr(self, "model", None) is None:
+            # Swin Base configuration
             in_channels = [256, 512, 1024]
-            backbone = YOLOPAFPN(self.depth, self.width, in_channels=in_channels, act=self.act)
+            out_channels = [256, 512, 1024]
+            
+            backbone = YOLOPAFPN_Swin(
+                in_channels=in_channels,
+                out_channels=out_channels,
+                act=self.act,
+                in_features=(1, 2, 3),
+                swin_depth=[2, 2, 18, 2],
+                num_heads=[4, 8, 16, 32],
+                base_dim=int(in_channels[0] / 2),  # 128 for Swin Base
+                pretrain_img_size=self.pretrain_img_size,
+                window_size=self.window_size,
+                width=self.width,
+                depth=self.depth
+            )
+            
             head = YOLOXHead(self.num_classes, self.width, in_channels=in_channels, act=self.act)
             self.model = YOLOX(backbone, head)
 
