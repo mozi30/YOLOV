@@ -142,20 +142,10 @@ class VisdroneDataset(Dataset):
         """Load image from file_name in annotation."""
         file_name = self.annotations[index][3]
         
-        # VisDrone-specific path handling
-        # file_name format: "VisDrone-VID/train/sequences/uav0000013_00000_v/0000098.jpg"
-        # or "train/VisDrone-VID/train/sequences/..."
-        
-        # Remove leading directory prefixes if present
-        if file_name.startswith("train/VisDrone-VID/"):
-            file_name = file_name.replace("train/VisDrone-VID/", "")
-        elif file_name.startswith("VisDrone-VID/"):
-            file_name = file_name.replace("VisDrone-VID/", "")
-        
         # Try multiple possible paths
         possible_paths = [
-            # Direct path in Data/VID/VisDrone-VID/
-            os.path.join(self.data_dir, "Data", "VID", "VisDrone-VID", file_name),
+            # Direct path in root
+            os.path.join(self.data_dir, file_name),
             # With train2017 symlink
             os.path.join(self.data_dir, "train2017", file_name),
             # With val2017 symlink
