@@ -17,6 +17,8 @@ from torch.utils.data.dataset import Dataset as torchDataset
 from torch.utils.data.sampler import Sampler,BatchSampler,SequentialSampler
 from xml.dom import minidom
 import math
+from yolox.data.datasets import coco
+from yolox.data.datasets.coco import remove_useless_info
 from yolox.utils import xyxy2cxcywh
 
 IMAGE_EXT = [".jpg", ".jpeg", ".webp", ".bmp", ".png",".JPEG"]
@@ -26,7 +28,7 @@ numlist = range(30)
 name_num = dict(zip(name_list,numlist))
 
 
-class VisDroneVID_JSON(torchDataset):
+class VisDroneVID(torchDataset):
     """
     VisDrone-VID loader for the schema:
 
@@ -482,7 +484,7 @@ class Arg_VID(torchDataset):
         self.img_size = img_size
         self.coco_anno_path = COCO_anno
         self.name_id_dic = self.get_NameId_dic()
-        self.coco = COCO(COCO_anno)
+        self.coco = coco(COCO_anno)
         remove_useless_info(self.coco)
         self.ids = sorted(self.coco.getImgIds())
         self.class_ids = sorted(self.coco.getCatIds())
