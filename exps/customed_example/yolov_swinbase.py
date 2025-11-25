@@ -3,7 +3,7 @@
 
 import os
 import torch.nn as nn
-from yolox.exp import Exp as MyExp
+from exps.yolov.yolov_base import Exp as MyExp
 from yolox.data.data_augment import Vid_Val_Transform
 import torch
 from loguru import logger
@@ -17,14 +17,13 @@ class Exp(MyExp):
         self.exp_name = os.path.split(os.path.realpath(__file__))[1].split(".")[0]
         self.backbone_name = 'Swin_Base'
         # Define yourself dataset path
-        self.data_dir = "/home/mozi/datasets/yolov" #set your dataset path
+        self.data_dir = "/home/mozi/datasets/visdrone/yolov" #set your dataset path
         self.train_ann = "annotations/imagenet_vid_train.json" #set your train annotation file
         self.val_ann = "annotations/imagenet_vid_val.json" #set your val annotation file
-
         self.num_classes = 10 #config you classes number here
         
-        self.max_epoch = 15
-        self.warmup_epochs = 3
+        self.max_epoch = 40
+        self.warmup_epochs = 5
         self.no_aug_epochs = 5
         self.pre_no_aug = 2
 
@@ -64,10 +63,10 @@ class Exp(MyExp):
 
         self.gmode = True
         self.lmode = True
-        self.lframe = 1
-        self.lframe_val = 1
-        self.gframe = 1
-        self.gframe_val = 1 #config your gframe_val and gframe here
+        self.lframe = 0
+        self.lframe_val = 0
+        self.gframe = 2
+        self.gframe_val = 2 #config your gframe_val and gframe here
         self.use_loc_emd = False
         self.iou_base = False
         self.reconf = True
@@ -81,6 +80,11 @@ class Exp(MyExp):
         self.minimal_limit = 50
         self.conf_sim_thresh = 0.99
         self.decouple_reg = True
+
+        self.pretrain_img_size = 544
+        self.window_size = 7
+
+        self.tnum_train = 1500  # set the training temporal number
 
     def get_model(self):
         # rewrite get model func from yolox
@@ -220,20 +224,22 @@ class Exp(MyExp):
             self, batch_size, is_distributed, no_aug=False, cache_img=False):
         from yolox.data import TrainTransform
         from yolox.data.datasets.vid  import VisDroneVID
+        assert batch_size == self.lframe + self.gframe
         dataset = VisDroneVID(
             data_dir=self.data_dir,
             json_file=os.path.join(self.data_dir, self.train_ann),
             name="train",
             img_size=self.input_size,
             preproc=TrainTransform(
-                max_labels=50,
+                max_labels=300,          # keep crowded-scene labels
                 flip_prob=self.flip_prob,
                 hsv_prob=self.hsv_prob,
             ),
-            lframe=0,
-            gframe=batch_size,
-            mode="random",
+            lframe=self.lframe,
+            gframe=self.gframe,
+            mode="gl",
             val=False,
+            tnum=self.tnum_train,
         )
 
         dataset = vid.get_trans_loader(batch_size=batch_size, data_num_workers=4, dataset=dataset)

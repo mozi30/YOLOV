@@ -16,7 +16,7 @@ python3 tools/vid_train.py \
     -f /home/mozi/TemporalAttentionPlayground/YOLOV/exps/customed_example/yolov_swinbase.py \
     --batch-size 2 \
     --fp16 \
-    -c $HOME_DIR/models/yolox_swinbase_w7/best_ckpt.pth
+    -c $HOME_DIR/models/yolox-swinbase/best_ckpt.pth
 
 echo ""
 echo "=========================================="

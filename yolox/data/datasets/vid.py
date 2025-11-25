@@ -63,6 +63,7 @@ class VisDroneVID(torchDataset):
         gframe=16,
         mode="random",      # "random" | "uniform" | "gl"
         val=False,
+        tnum=3000
     ):
         super().__init__()
         self.data_dir = data_dir
@@ -73,6 +74,7 @@ class VisDroneVID(torchDataset):
         self.gframe = gframe
         self.mode = mode
         self.val = val
+        self.tnum = tnum
 
         with open(json_file, "r") as f:
             jd = json.load(f)
@@ -196,10 +198,16 @@ class VisDroneVID(torchDataset):
         if self.val:
             random.seed(42)
             random.shuffle(res)
-            return res
+            if self.tnum == -1:
+                return res
+            else:
+                return res[:self.tnum]
         else:
             random.shuffle(res)
-            return res
+            if self.tnum == -1:
+                return res[:15000]
+            else:
+                return res[:self.tnum]
 
     # -------- utilities
     def _resize_factor(self, H, W):
@@ -228,7 +236,8 @@ class VisDroneVID(torchDataset):
         Returns: img (resized), annos (rescaled [N,5]), img_info (H,W), returned_path (str)
         """
         # Absolute path
-        abs_path = os.path.join(self.data_dir, self.name, path)
+        #abs_path = os.path.join(self.data_dir, self.name, path)
+        abs_path = os.path.join(self.data_dir, path)
         img = cv2.imread(abs_path)
         if img is None:
             raise FileNotFoundError(f"Could not read image: {abs_path}")
@@ -887,7 +896,7 @@ def collate_fn(batch):
     path = []
     path_sequence = []
     for sample in batch:
-        tar_tensor = torch.zeros([120,5])
+        tar_tensor = torch.zeros([300,5])
         imgs.append(torch.tensor(sample[0]))
         tar_ori.append(torch.tensor(sample[1]))
         tar_tensor[:sample[1].shape[0]] = torch.tensor(sample[1])
