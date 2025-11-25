@@ -9,21 +9,14 @@ cd $HOME_DIR/TemporalAttentionPlayground/YOLOV
 source $HOME_DIR/miniconda3/etc/profile.d/conda.sh
 conda activate yolox
 
-echo "Starting eval..."
+echo "Starting training..."
 echo ""
-python tools/eval.py \
-  -f exps/customed_example/yolox_swinbase.py\
-  -c /home/mozi/TemporalAttentionPlayground/YOLOV/YOLOX_outputs/yolox_swinbase/last_epoch_ckpt.pth\
-  -b 2 \
-  -d 1 \
-  --conf 0.001 \
-  --nms 0.7 \
-  --fp16 \
-  --fuse
-
-
-
-
+python3 tools/vid_train.py \
+    -n yolov_swinbase_window_2 \
+    -f /home/mozi/TemporalAttentionPlayground/YOLOV/exps/customed_example/yolov_swinbase.py \
+    --batch-size 2 \
+    --fp16 \
+    -c $HOME_DIR/models/yolox_swinbase_w7/best_ckpt.pth
 
 echo ""
 echo "=========================================="

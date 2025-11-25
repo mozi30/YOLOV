@@ -12,12 +12,12 @@ conda activate yolox
 echo "Starting training..."
 echo ""
 python3 tools/train.py \
-    -n yolox_swinbase \
+    -n yolox_swinbase_window_12 \
     -f exps/customed_example/yolox_swinbase.py \
-    --batch-size 4 \
+    --batch-size 2 \
     --fp16 \
     --resume \
-    -c $HOME_DIR/TemporalAttentionPlayground/YOLOV/YOLOX_outputs/yolox_swinbase/latest_ckpt.pth \
+    -c $HOME_DIR/models/yolox_swinbase-w7/best_ckpt.pth \
     --logger "tensorboard"
 
 # python3 tools/train.py \

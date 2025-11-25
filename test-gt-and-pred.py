@@ -64,7 +64,7 @@ def main():
     exp_file = "exps/customed_example/yolox_swinbase.py"
     ckpt_file = "YOLOX_outputs/yolox_swinbase/best_ckpt.pth"
     ann_file = "/home/mozi/datasets/visdrone/yolov/annotations/imagenet_vid_val_coco.json"
-    img_root = "/home/mozi/datasets/visdrone/yolov/Data/VID/"  # adjust if different
+    img_root = "/home/mozi/datasets/visdrone/yolov/"  # adjust if different
     out_dir = "output/gt_vs_pred"
     os.makedirs(out_dir, exist_ok=True)
     print("Loading annotations...")
