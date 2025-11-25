@@ -26,20 +26,20 @@ class Exp(MyExp):
         # Training configuration (AP-oriented)
         # -------------------------------
         # Longer schedule with a no-aug tail
-        self.max_epoch = 40
-        self.warmup_epochs = 3
-        self.no_aug_epochs = 35
+        self.max_epoch = 60
+        self.warmup_epochs = 5
+        self.no_aug_epochs = 8 
 
         # Learning rate and optimizer
         self.act = "silu" # Activation function
         self.data_num_workers = 8 # Number of data loading workers
-        self.basic_lr_per_img = 0.01 / 64
+        self.basic_lr_per_img = 0.006 / 64
         self.min_lr_ratio = 0.01
 
         # Input size and multiscale training
-        self.multiscale_range = 1
-        self.input_size = (544, 960)
-        self.test_size  = (544, 960)
+        self.multiscale_range = 3
+        self.input_size = (512, 896)
+        self.input_size = (512, 896)
 
         self.eval_interval = 1
 
@@ -49,7 +49,7 @@ class Exp(MyExp):
         self.mosaic_prob = 0.5   
         self.mosaic_scale = (0.5, 1.5)
         self.enable_mixup = False
-        self.hsv_prob = 0.5
+        self.hsv_prob = 1.0
         self.flip_prob = 0.5
 
         # geometric: slightly softened
@@ -61,14 +61,14 @@ class Exp(MyExp):
         self.ema = True
         self.weight_decay = 1e-4
 
-        self.test_conf = 0.01
-        self.nmsthre = 0.2
+        self.test_conf = 0.05
+        self.nmsthre = 0.05
 
         # Swin Transformer configuration
-        self.backbone_name = "swin_base"  # Options: swin_tiny, swin_small, swin_base
+        self.backbone_name = "swin_tiny"  # Options: swin_tiny, swin_small, swin_base
         self.pretrained = True  # Use ImageNet pretrained weights
         self.pretrain_img_size = 224  # ImageNet pretrain size
-        self.window_size = 7  # Swin window size
+        self.window_size = 1  # Swin window size
 
     def get_model(self):
         from yolox.models import YOLOX, YOLOPAFPN_Swin
@@ -82,20 +82,24 @@ class Exp(MyExp):
                     m.momentum = 0.03
 
         if getattr(self, "model", None) is None:
-            in_channels = [256, 512, 1024]
-            out_channels = [256, 512, 1024]
-            backbone = YOLOPAFPN_Swin(in_channels=in_channels,
-                                        out_channels=out_channels,
-                                        act=self.act,
-                                        in_features=(1, 2, 3),
-                                        swin_depth=[2, 2, 18, 2],
-                                        num_heads=[4, 8, 16, 32],
-                                        base_dim=int(in_channels[0] / 2),
-                                        pretrain_img_size=self.pretrain_img_size,
-                                        window_size=self.window_size,
-                                        width=self.width,
-                                        depth=self.depth
-                                        )
+            # Swin Tiny configuration
+            # Swin-T: embed_dim=96 -> stages: [96, 192, 384, 768]
+            in_channels = [192, 384, 768]     # stages 1, 2, 3
+            out_channels = [256, 512, 1024]   # FPN output dims (you can keep these)
+
+            backbone = YOLOPAFPN_Swin(
+                in_channels=in_channels,
+                out_channels=out_channels,
+                act=self.act,
+                in_features=(1, 2, 3),              # same stages as before
+                swin_depth=[2, 2, 6, 2],            # Swin-Tiny depths
+                num_heads=[3, 6, 12, 24],           # Swin-Tiny heads
+                base_dim=96,                        # embed_dim for Swin-Tiny
+                pretrain_img_size=self.pretrain_img_size,
+                window_size=self.window_size,
+                width=self.width,
+                depth=self.depth,
+            )
 
             head = YOLOXHead(
                 self.num_classes,

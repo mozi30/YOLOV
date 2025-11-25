@@ -1,9 +1,11 @@
+#!/usr/bin/env python3
+# -*- coding:utf-8 -*-
+
 import os
 import torch.nn as nn
-import sys
+from yolox.exp import Exp as MyExp
+from yolox.data.data_augment import Vid_Val_Transform
 import torch
-sys.path.append("..")
-from exps.yolov.yolov_base import Exp as MyExp
 from loguru import logger
 from yolox.data.datasets import vid
 
@@ -13,23 +15,59 @@ class Exp(MyExp):
         self.depth = 1.0
         self.width = 1.0
         self.exp_name = os.path.split(os.path.realpath(__file__))[1].split(".")[0]
-        self.backbone_name = 'Swin_Tiny'
+        self.backbone_name = 'Swin_Base'
         # Define yourself dataset path
-        self.data_dir = "/opt/dataset/OVIS" #set your dataset path
-        self.train_ann = "ovis_train.json" #set your train annotation file
-        self.val_ann = "ovis_train.json" #set your val annotation file
+        self.data_dir = "/home/mozi/datasets/yolov" #set your dataset path
+        self.train_ann = "annotations/imagenet_vid_train.json" #set your train annotation file
+        self.val_ann = "annotations/imagenet_vid_val.json" #set your val annotation file
 
-        self.num_classes = 30 #config you classes number here
-        self.warmup_epochs = 0
-        self.no_aug_epochs = 2
+        self.num_classes = 10 #config you classes number here
+        
+        self.max_epoch = 15
+        self.warmup_epochs = 3
+        self.no_aug_epochs = 5
         self.pre_no_aug = 2
+
+        # Learning rate and optimizer
+        self.act = "silu" # Activation function
+        self.data_num_workers = 8 # Number of data loading workers
+        self.basic_lr_per_img = 0.01 / 64
+        self.min_lr_ratio = 0.01
+
+        # Input size and multiscale training
+        self.multiscale_range = 2
+        self.input_size = (544, 960)
+        self.test_size = (544, 960)
+
         self.eval_interval = 1
+
+        # -------------------------------
+        # Augmentation / multiscale
+        # -------------------------------
+        self.mosaic_prob = 0.5   
+        self.mosaic_scale = (0.5, 1.5)
+        self.enable_mixup = True
+        self.hsv_prob = 0.5
+        self.flip_prob = 0.5
+
+        # geometric: slightly softened
+        self.degrees = 5.0            
+        self.translate = 0.1          
+        self.shear = 2.0           
+        
+        # EMA (Exponential Moving Average)
+        self.ema = True
+        self.weight_decay = 1e-4
+
+        self.test_conf = 0.01
+        self.nmsthre = 0.2
+
         self.gmode = True
-        self.lmode = False
-        self.lframe = 0
-        self.lframe_val = 0
-        self.gframe = 16
-        self.gframe_val = 32 #config your gframe_val and gframe here
+        self.lmode = True
+        self.lframe = 1
+        self.lframe_val = 1
+        self.gframe = 1
+        self.gframe_val = 1 #config your gframe_val and gframe here
         self.use_loc_emd = False
         self.iou_base = False
         self.reconf = True
@@ -126,15 +164,8 @@ class Exp(MyExp):
                          pre_nms=self.pre_nms, ave=self.ave, defulat_pre=self.defualt_pre, test_conf=self.test_conf,
                          use_mask=self.use_mask,gmode=self.gmode,lmode=self.lmode,both_mode=self.both_mode,
                          localBlocks = self.localBlocks,**more_args)
-        for layer in head.stems.parameters():
-            layer.requires_grad = False  # set stem fixed
-        for layer in head.reg_convs.parameters():
-            layer.requires_grad = False
-            layer.requires_grad = False
-        for layer in head.cls_convs.parameters():
-            layer.requires_grad = False
-        for layer in head.reg_preds.parameters():
-            layer.requires_grad = False
+        for layer in head.parameters():
+            layer.requires_grad = True 
 
         self.model = YOLOV(backbone, head)
 
@@ -188,18 +219,22 @@ class Exp(MyExp):
     def get_data_loader(
             self, batch_size, is_distributed, no_aug=False, cache_img=False):
         from yolox.data import TrainTransform
-        dataset = vid.OVIS(   #change to your own dataset
-                            img_size=self.input_size,
-                            preproc=TrainTransform(
-                                max_labels=50,
-                                flip_prob=self.flip_prob,
-                                hsv_prob=self.hsv_prob),
-                            mode='random',
-                            lframe=0,
-                            gframe=batch_size,
-                            data_dir=self.data_dir,
-                            name='train',  #change to your own dir name
-                            COCO_anno=os.path.join(self.data_dir, self.train_ann))
+        from yolox.data.datasets.vid  import VisDroneVID
+        dataset = VisDroneVID(
+            data_dir=self.data_dir,
+            json_file=os.path.join(self.data_dir, self.train_ann),
+            name="train",
+            img_size=self.input_size,
+            preproc=TrainTransform(
+                max_labels=50,
+                flip_prob=self.flip_prob,
+                hsv_prob=self.hsv_prob,
+            ),
+            lframe=0,
+            gframe=batch_size,
+            mode="random",
+            val=False,
+        )
 
         dataset = vid.get_trans_loader(batch_size=batch_size, data_num_workers=4, dataset=dataset)
         return dataset
@@ -207,15 +242,18 @@ class Exp(MyExp):
     def get_eval_loader(self, batch_size,  tnum=None, data_num_workers=8, formal=False):
 
         assert batch_size == self.lframe_val+self.gframe_val
-        dataset_val = vid.OVIS(data_dir=self.data_dir, #change to your own dataset
-                               img_size=self.test_size,
-                               mode='random',
-                               COCO_anno=os.path.join(self.data_dir, self.val_ann),
-                               name='val', #change to your own dir name
-                               lframe=self.lframe_val,
-                               gframe=self.gframe_val,
-                               preproc=Vid_Val_Transform()
-                               )
+        from yolox.data.datasets.vid  import VisDroneVID
+        dataset_val = VisDroneVID(
+            data_dir=self.data_dir,
+            json_file=os.path.join(self.data_dir, self.val_ann),
+            name="val",
+            img_size=self.test_size,
+            preproc=Vid_Val_Transform(),
+            lframe=self.lframe_val,
+            gframe=self.gframe_val,
+            mode="random",
+            val=True,
+        )
 
         val_loader = vid.get_trans_loader(batch_size=batch_size, data_num_workers=data_num_workers, dataset=dataset_val)
         return val_loader
