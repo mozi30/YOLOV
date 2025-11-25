@@ -9,6 +9,8 @@ import torch
 import torch.distributed as dist
 import torch.nn as nn
 
+from yolox.data.datasets.coco import COCODatasetFraction
+
 from .base_exp import BaseExp
 
 
@@ -280,11 +282,12 @@ class Exp(BaseExp):
     def get_eval_loader(self, batch_size, is_distributed, testdev=False, legacy=False):
         from yolox.data import COCODataset, ValTransform
 
-        valdataset = COCODataset(
+        valdataset = COCODatasetFraction(
             data_dir=self.data_dir,
             json_file=self.val_ann if not testdev else self.test_ann,
             name= self.val_name if not testdev else "test2017",
             img_size=self.test_size,
+            subset_fraction=0.1,
             preproc=ValTransform(legacy=legacy),
         )
 
