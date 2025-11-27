@@ -22,7 +22,7 @@ class Exp(MyExp):
         self.val_ann = "annotations/imagenet_vid_val.json" #set your val annotation file
         self.num_classes = 10 #config you classes number here
         
-        self.max_epoch = 40
+        self.max_epoch = 100
         self.warmup_epochs = 5
         self.no_aug_epochs = 5
         self.pre_no_aug = 2
@@ -85,6 +85,7 @@ class Exp(MyExp):
         self.window_size = 7
 
         self.tnum_train = 1500  # set the training temporal number
+        self.tnum_val = 500    # set the validation temporal number
 
     def get_model(self):
         # rewrite get model func from yolox
@@ -259,6 +260,7 @@ class Exp(MyExp):
             gframe=self.gframe_val,
             mode="random",
             val=True,
+            tnum=self.tnum_val,
         )
 
         val_loader = vid.get_trans_loader(batch_size=batch_size, data_num_workers=data_num_workers, dataset=dataset_val)
