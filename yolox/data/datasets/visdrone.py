@@ -6,10 +6,10 @@ import os
 import random
 import cv2
 import numpy as np
-from pycocotools.coco import COCO
 
 from torch.utils.data.dataset import Dataset as torchDataset
-from .datasets_wrapper import Dataset
+
+from .datasets_wrapper import Dataset  # not used directly, but left for compatibility
 
 
 VISDRONE_CATEGORIES = [
@@ -22,8 +22,7 @@ VISDRONE_CATEGORIES = [
     {"id": 7,  "name": "tricycle",          "supercategory": "vehicle"},
     {"id": 8,  "name": "awning-tricycle",   "supercategory": "vehicle"},
     {"id": 9,  "name": "bus",               "supercategory": "vehicle"},
-    {"id": 10, "name": "motor",             "supercategory": "vehicle"},
-    {"id": 11, "name": "others",            "supercategory": "unknown"}
+    {"id": 10, "name": "motor",             "supercategory": "vehicle"}
 ]
 
 
@@ -31,24 +30,24 @@ class VidDroneVIDataset(torchDataset):
     def __init__(
         self,
         data_dir,
-        split = "train",
+        split="train",
         img_size=(640, 640),
         preproc=None,
-        lframe = 0,
-        gframe = 0,
-        sample_mode = "random", # "random" or "uniform" | "gl"
-        max_epoch_samples = -1,
-        
+        lframe=0,
+        gframe=0,
+        sample_mode="gl",  # "random" or "uniform" or "gl"
+        max_epoch_samples=-1,
+
         # New Settings
-        gl_stride = 1,
-        ignore_regions = False,
-        pertubations = None,
-        pertubations_seed = 42, # If -1 -> random seed
+        gl_stride=1,
+        ignore_regions=False,
+        pertubations=None,
+        pertubations_seed=42,  # If -1 -> random seed
     ):
         super().__init__()
         self.data_dir = data_dir
         self.split = split
-        self.split_folder = "VisDrone-VID-" + self.split
+        self.split_folder = "VisDrone2019-VID-" + self.split
         self.img_size = img_size
         self.preproc = preproc
         self.lframe = lframe
@@ -58,46 +57,53 @@ class VidDroneVIDataset(torchDataset):
         self.ignore_regions = ignore_regions
         self.pertubations = pertubations
         self.pertubations_seed = pertubations_seed
+
         self.annotations = self.build_dataset_from_directory()
         self.gl_stride = max(1, gl_stride)
-        if( self.split == "val"):
-            self.val = True
-        else:
-            self.val = False
+        self.val = (self.split == "val")
 
-        assert gframe + lframe > 0, "gframe and lframe cannot be both zero."
+        assert self.gframe + self.lframe > 0, "gframe and lframe cannot be both zero."
 
+        # ----- build video list and per-frame structures -----
         self.videos = []
+        # Quick lookup: video_id -> video meta
+        self.vid2meta = {}
 
         for video_ann in self.annotations["videos"]:
             vid_id = video_ann["video_id"]
             width = video_ann["width"]
             height = video_ann["height"]
 
-            # collect all frame names for this video in order
-            file_names = [img["file_name"] for img in self.annotations["video_images"][vid_id]]
-            image_uid = [(vid_id, img["image_id"]) for img in self.annotations["video_images"][vid_id]]
+            # file_names are full relative paths: split_folder/sequences/video_name/frame.jpg
+            file_names = [
+                os.path.join(video_ann["video_path"], img["file_name"])
+                for img in self.annotations["video_images"][vid_id]
+            ]
+
             self.videos.append({
                 "id": vid_id,
                 "width": width,
                 "height": height,
                 "length": len(file_names),
                 "file_names": file_names,
-                "image_uid": image_uid
             })
-        
+            self.vid2meta[vid_id] = video_ann
+
+        # dataset_sequences: list of sequences (each is list[str] full relative paths)
         self.dataset_sequences = []
         for v in self.videos:
-            # one sequence per video, list of frame file names in order
-            self.dataset_sequences.append(list(v["image_uid"]))
+            self.dataset_sequences.append(list(v["file_names"]))
 
+        # Build sampling result (list of sequences of file paths)
         self.res = self.photo_to_sequence(self.lframe, self.gframe)
 
         # Flat frame index and per-frame annotation map
-        self.frame_index = []          # list of {"key": (vid_id, frame_idx), "file_name": ..., "width": ..., "height": ...}
-        self.ann_map = {}              # (vid_id, frame_idx) -> list of {"bbox": [x1,y1,x2,y2], "cid": class_id}
+        # key = (vid_id, frame_idx)
+        self.frame_index = []      # list of {"key": (vid, frame_idx), "file_name": ..., "width": ..., "height": ...}
+        self.ann_map = {}          # (vid, frame_idx) -> list of {"bbox": [x1,y1,x2,y2], "cid": class_id}
+        self.name_key_map = {}     # "relative/path/to/img.jpg" -> (vid, frame_idx)
 
-        # Optional: category-id → contiguous-id map
+        # category-id → contiguous-id map
         cats = self.annotations["categories"]
         cat_ids_sorted = sorted([c["id"] for c in cats])
         self.catid2cid = {cid: i for i, cid in enumerate(cat_ids_sorted)}
@@ -106,30 +112,32 @@ class VidDroneVIDataset(torchDataset):
         video_ann_list = self.annotations["video_annotations"]  # list of {"video_id": vid, "annotations": {image_id: [...]}}
         vid_to_img_ann = {va["video_id"]: va["annotations"] for va in video_ann_list}
 
-        for v in self.videos:
-            vid = v["id"]
-            width = v["width"]
-            height = v["height"]
+        for video_meta in self.annotations["videos"]:
+            vid = video_meta["video_id"]
+            width = video_meta["width"]
+            height = video_meta["height"]
+            video_path = video_meta["video_path"]
 
-            # images list for this video (already ordered by frame_id in your builder)
-            images = self.annotations["video_images"][vid]  # list of image dicts
+            images = self.annotations["video_images"][vid]   # list of image dicts
             img_ann = vid_to_img_ann.get(vid, {})
 
             for frame_idx, img_info in enumerate(images):
-                file_name = img_info["file_name"]
+                file_name = img_info["file_name"]   # "000123.jpg"
                 image_id = img_info["image_id"]
+                rel_path = os.path.join(video_path, file_name)  # e.g. "VisDrone-VID-train/sequences/video001/000123.jpg"
 
                 key = (vid, frame_idx)
 
-                # 1) frame_index entry
+                # frame_index entry
                 self.frame_index.append({
                     "key": key,
-                    "file_name": file_name,
+                    "file_name": rel_path,
                     "width": width,
                     "height": height,
                 })
+                self.name_key_map[rel_path] = key
 
-                # 2) annotations for this frame
+                # annotations for this frame
                 self.ann_map[key] = []
                 for ann in img_ann.get(image_id, []):
                     x1, y1, x2, y2 = ann["bbox"]  # already xyxy
@@ -138,14 +146,28 @@ class VidDroneVIDataset(torchDataset):
                         "bbox": [x1, y1, x2, y2],
                         "cid": cid,
                     })
-    
 
+    # ------------------------------------------------------------------
+    # Required by PyTorch Dataset
+    # ------------------------------------------------------------------
+    def __len__(self):
+        """
+        We treat each element of self.res as a "sequence" (list of frame paths).
+        The samplers you use (TrainSampler + VIDBatchSampler) will iterate
+        over self.res and then flatten those sequences, so this value is
+        the number of sequences, not the number of frames.
+        """
+        return len(self.res)
 
-    def get_video_size(self, video_name):            
+    # ------------------------------------------------------------------
+    # Dataset building
+    # ------------------------------------------------------------------
+    def get_video_size(self, video_name):
         seq_path = os.path.join(self.data_dir, self.split_folder, "sequences", video_name)
-        img_files = [f for f in os.listdir(seq_path) if f.endswith('.jpg') or f.endswith('.png')]
+        img_files = [f for f in os.listdir(seq_path) if f.endswith(".jpg") or f.endswith(".png")]
         if not img_files:
             raise FileNotFoundError(f"No image files found in {seq_path}")
+        # order doesn't matter for size, all frames have same size in VisDrone
         first_img_path = os.path.join(seq_path, img_files[0])
         img = cv2.imread(first_img_path)
         if img is None:
@@ -153,91 +175,125 @@ class VidDroneVIDataset(torchDataset):
         return img.shape[1], img.shape[0]  # width, height
 
     def build_dataset_from_directory(self):
-        #check if directory exists
+        # check dirs
         if not os.path.exists(self.data_dir):
             raise FileNotFoundError(f"Data directory {self.data_dir} does not exist.")
         if not os.path.exists(os.path.join(self.data_dir, self.split_folder)):
             raise FileNotFoundError(f"Split folder {self.split_folder} does not exist in {self.data_dir}.")
-        if not os.path.exists(os.path.join(self.data_dir,self.split_folder, "annotations")):
+        if not os.path.exists(os.path.join(self.data_dir, self.split_folder, "annotations")):
             raise FileNotFoundError(f"Annotations folder does not exist in {self.data_dir}.")
         if not os.path.exists(os.path.join(self.data_dir, self.split_folder, "sequences")):
             raise FileNotFoundError(f"Sequences folder does not exist in {self.data_dir}.")
-        
+
         annotations = {}
         videos = []
         video_images = {}
-        video_annotations = {}
-        video_ignored_regions = {}
+        video_annotations = []      # must be list, not dict
+        video_ignored_regions = []  # must be list, not dict
+
         video_id = 0
-        for annotation_file in os.listdir(os.path.join(self.data_dir, self.split_folder, "annotations")):
-            if annotation_file.endswith(".txt"):
-                annotation_path = os.path.join(self.data_dir,self.split_folder, "annotations", annotation_file)
-                video_name = annotation_file[:-4]  # Remove .txt extension
-                width, height = self.get_video_size(video_name)
-                videos.append({"video_id": video_id, "video_name": video_name,
-                                "video_path": os.path.join(self.split_folder, "sequences", video_name),
-                                  "width": width, "height": height})
-                video_images[video_id] = []
-                image_ignored_regions = {}
-                image_annotations = {}
-                image_id = 0
-                seen_images = {}
-                with open(annotation_path, 'r') as f:
-                    lines = f.readlines()
-                    for line in lines:
-                        parts = line.strip().split(',')
-                        frame_id = int(parts[0])
-                        target_id = int(parts[1])
-                        def xywh_to_xyxy(x, y, w, h):
-                            x1 = x
-                            y1 = y
-                            x2 = x + w
-                            y2 = y + h
-                            return [x1, y1, x2, y2]
-                        bbox = xywh_to_xyxy(float(parts[2]), float(parts[3]), float(parts[4]), float(parts[5]))
-                        score = float(parts[6])
-                        category_id = int(parts[7])
-                        trucated = int(parts[8])
-                        occluded = int(parts[9])
 
-                        image_name = f"{frame_id:06d}.jpg"
-                        id_of_image = None
-                        if image_name not in seen_images:
-                            video_images[video_id].append({
-                                "image_id": image_id,
-                                "file_name": image_name,
-                                "width": width,
-                                "height": height,
-                                "frame_id": frame_id,
-                                "video_id": video_id,
-                            })
-                            seen_images[image_name] = image_id
-                            id_of_image = image_id
-                            image_id += 1
-                        else:
-                            id_of_image = seen_images[image_name]
+        ann_dir = os.path.join(self.data_dir, self.split_folder, "annotations")
+        for annotation_file in os.listdir(ann_dir):
+            if not annotation_file.endswith(".txt"):
+                continue
 
-                        if(category_id == 0):  # Assuming 0 is the ignore region class
-                             if id_of_image not in image_ignored_regions:
-                                image_ignored_regions[id_of_image] = []
-                             image_ignored_regions[id_of_image].append(bbox)
-                             continue
-                        
-                        if id_of_image not in image_annotations:
-                            image_annotations[id_of_image] = []
-                        image_annotations[id_of_image].append({
-                            "bbox": bbox,
-                            "score": score,
-                            "category_id": category_id,
-                            "truncated": trucated,
-                            "occluded": occluded,
-                            "target_id": target_id
+            annotation_path = os.path.join(ann_dir, annotation_file)
+            video_name = annotation_file[:-4]  # Remove .txt extension
+            width, height = self.get_video_size(video_name)
+
+            videos.append({
+                "video_id": video_id,
+                "video_name": video_name,
+                "video_path": os.path.join(self.split_folder, "sequences", video_name),
+                "width": width,
+                "height": height,
+            })
+
+            video_images[video_id] = []
+            image_ignored_regions = {}
+            image_annotations = {}
+            image_id = 0
+            seen_images = {}
+
+            with open(annotation_path, 'r') as f:
+                lines = f.readlines()
+                for line in lines:
+                    parts = line.strip().split(',')
+                    if len(parts) < 10:
+                        # malformed line
+                        continue
+
+                    frame_id = int(parts[0])
+                    target_id = int(parts[1])
+
+                    def xywh_to_xyxy(x, y, w, h):
+                        x1 = x
+                        y1 = y
+                        x2 = x + w
+                        y2 = y + h
+                        return [x1, y1, x2, y2]
+
+                    bbox = xywh_to_xyxy(
+                        float(parts[2]),
+                        float(parts[3]),
+                        float(parts[4]),
+                        float(parts[5]),
+                    )
+                    score = float(parts[6])
+                    category_id = int(parts[7])
+                    truncated = int(parts[8])
+                    occluded = int(parts[9])
+
+                    image_name = f"{frame_id:07d}.jpg"
+                    if image_name not in seen_images:
+                        video_images[video_id].append({
+                            "image_id": image_id,
+                            "file_name": image_name,
+                            "width": width,
+                            "height": height,
+                            "frame_id": frame_id,
+                            "video_id": video_id,
                         })
-                        
-                video_ignored_regions.append({"video_id": video_id, "ignored_regions": image_ignored_regions})
-                video_annotations.append({"video_id": video_id, "annotations": image_annotations})
-        
-                video_id += 1
+                        seen_images[image_name] = image_id
+                        id_of_image = image_id
+                        image_id += 1
+                    else:
+                        id_of_image = seen_images[image_name]
+
+                    # category_id == 0 means ignore region
+                    if category_id == 0:
+                        if id_of_image not in image_ignored_regions:
+                            image_ignored_regions[id_of_image] = []
+                        image_ignored_regions[id_of_image].append(bbox)
+                        continue
+
+                    if category_id < 1 or category_id > 10:
+                        # invalid category_id for VisDrone
+                        continue
+
+                    if id_of_image not in image_annotations:
+                        image_annotations[id_of_image] = []
+                    image_annotations[id_of_image].append({
+                        "bbox": bbox,
+                        "score": score,
+                        "category_id": category_id,
+                        "truncated": truncated,
+                        "occluded": occluded,
+                        "target_id": target_id,
+                    })
+
+            video_ignored_regions.append({
+                "video_id": video_id,
+                "ignored_regions": image_ignored_regions,
+            })
+            video_annotations.append({
+                "video_id": video_id,
+                "annotations": image_annotations,
+            })
+
+            video_id += 1
+
         annotations["videos"] = videos
         annotations["video_images"] = video_images
         annotations["video_annotations"] = video_annotations
@@ -245,7 +301,10 @@ class VidDroneVIDataset(torchDataset):
         annotations["categories"] = VISDRONE_CATEGORIES
 
         return annotations
-    
+
+    # ------------------------------------------------------------------
+    # Sequence sampling for self.res (same style as your other datasets)
+    # ------------------------------------------------------------------
     def photo_to_sequence(self, lframe, gframe):
         res = []
         for seq in self.dataset_sequences:
@@ -269,7 +328,10 @@ class VidDroneVIDataset(torchDataset):
                     for i in range(split_num):
                         l_clip = all_local[i * lframe:(i + 1) * lframe]
                         others = seq[:i * lframe] + seq[(i + 1) * lframe:]
-                        g_clip = random.sample(others, gframe) if gframe > 0 and len(others) >= gframe else []
+                        g_clip = (
+                            random.sample(others, gframe)
+                            if gframe > 0 and len(others) >= gframe else []
+                        )
                         res.append(l_clip + g_clip)
 
             elif self.sample_mode == "uniform":
@@ -285,7 +347,10 @@ class VidDroneVIDataset(torchDataset):
                 for i in range(0, split_num, self.gl_stride):
                     l_clip = all_local[i * lframe:(i + 1) * lframe]
                     others = seq[:i * lframe] + seq[(i + 1) * lframe:]
-                    g_clip = random.sample(others, gframe) if gframe > 0 and len(others) >= gframe else []
+                    g_clip = (
+                        random.sample(others, gframe)
+                        if gframe > 0 and len(others) >= gframe else []
+                    )
                     res.append(l_clip + g_clip)
             else:
                 raise ValueError(f"Unsupported mode: {self.sample_mode}")
@@ -300,17 +365,23 @@ class VidDroneVIDataset(torchDataset):
         else:
             random.shuffle(res)
             if self.max_epoch_samples == -1:
+                # hard cap like in your other datasets
                 return res[:15000]
             else:
                 return res[:self.max_epoch_samples]
-    
 
+    # ------------------------------------------------------------------
+    # Label & item helpers
+    # ------------------------------------------------------------------
     def _resize_factor(self, H, W):
         return min(self.img_size[0] / H, self.img_size[1] / W)
 
     def _labels_for(self, vid, frame_idx):
-        v = next(v for v in self.videos if v["id"] == vid)
-        H, W = v["height"], v["width"]
+        """
+        Return (rescaled_labels [N,5], img_info(H,W)) for a given frame key.
+        """
+        video_meta = self.vid2meta[vid]
+        H, W = video_meta["height"], video_meta["width"]
         r = self._resize_factor(H, W)
 
         anns = self.ann_map.get((vid, frame_idx), [])
@@ -322,22 +393,17 @@ class VidDroneVIDataset(torchDataset):
             labels[i, 4] = a["cid"]
         return labels, (H, W)
 
-    def pull_item(self, key):
+    def pull_item(self, rel_path):
         """
-        key: (video_id, frame_idx) from self.res / dataset_sequences.
+        rel_path: relative path string like 'VisDrone-VID-train/sequences/seq_name/000123.jpg'
+        Returns: resized_img, annos, img_info, rel_path
         """
-        vid, frame_idx = key
+        if rel_path not in self.name_key_map:
+            raise KeyError(f"Unknown frame path: {rel_path}")
 
-        # image meta
-        img_infos = self.annotations["video_images"][vid]
-        img_info_dict = img_infos[frame_idx]
-        file_name = img_info_dict["file_name"]           # e.g. "000123.jpg"
+        vid, frame_idx = self.name_key_map[rel_path]
 
-        video_path = next(v["video_path"] for v in self.annotations["videos"]
-                        if v["video_id"] == vid)
-
-        # datadir + video_path + file_name
-        abs_path = os.path.join(self.data_dir, video_path, file_name)
+        abs_path = os.path.join(self.data_dir, rel_path)
         img = cv2.imread(abs_path)
         if img is None:
             raise FileNotFoundError(f"Could not read image: {abs_path}")
@@ -351,15 +417,18 @@ class VidDroneVIDataset(torchDataset):
         ).astype(np.uint8)
 
         annos, img_info = self._labels_for(vid, frame_idx)
-        return img_resized, annos, img_info, key
-            
-    def __getitem__(self, path):
+        return img_resized, annos, img_info, rel_path
 
-        img, target, img_info, path = self.pull_item(path)
+    def __getitem__(self, path):
+        """
+        path is expected to be a relative frame path string,
+        coming from your custom samplers (TrainSampler + VIDBatchSampler).
+        """
+        img, target, img_info, rel_path = self.pull_item(path)
         if self.preproc is not None:
             img, target = self.preproc(img, target, self.img_size)
-        return img, target, img_info,path               
-                        
+        return img, target, img_info, rel_path
+    
 
 
 class VisdroneDataset(Dataset):
