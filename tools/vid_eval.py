@@ -11,6 +11,7 @@ import os
 import torch
 import torch.backends.cudnn as cudnn
 
+from yolox.data.datasets.visdrone import VidDroneVIDataset
 from yolox.core import launch
 from yolox.core.vid_trainer import Trainer
 
@@ -126,12 +127,13 @@ def main(exp, args):
     lframe = int(args.lframe)
     gframe = int(args.gframe)
 
-    dataset_val = vid.VIDDataset(file_path='./yolox/data/datasets/val_seq.npy',
-                                 img_size=(args.tsize, args.tsize), preproc=Vid_Val_Transform(), lframe=lframe,
-                                 gframe=gframe, val=True,mode=args.mode,dataset_pth=exp.data_dir,tnum=int(args.tnum),
-                                 formal=args.formal,local_stride=exp.local_stride,)
-    val_loader = vid.vid_val_loader(batch_size=lframe + gframe, data_num_workers=4, dataset=dataset_val,)
+    # dataset_val = vid.VIDDataset(file_path='./yolox/data/datasets/val_seq.npy',
+    #                              img_size=(args.tsize, args.tsize), preproc=Vid_Val_Transform(), lframe=lframe,
+    #                              gframe=gframe, val=True,mode=args.mode,dataset_pth=exp.data_dir,tnum=int(args.tnum),
+    #                              formal=args.formal,local_stride=exp.local_stride,)
+    # val_loader = vid.vid_val_loader(batch_size=lframe + gframe, data_num_workers=4, dataset=dataset_val,)
 
+    #val_loader = exp.get_eval_loader(batch_size=args.batch_size)
 
     ##  customed dataset here:
     # dataset_val = vid.OVIS(data_dir='/opt/dataset/OVIS', img_size=exp.test_size, mode='random',
@@ -139,6 +141,37 @@ def main(exp, args):
     #                        lframe=0, gframe=gframe, preproc=Vid_Val_Transform()
     #                        )
     # val_loader = vid.vid_val_loader(batch_size=lframe + gframe, data_num_workers=4, dataset=dataset_val, )
+
+    assert lframe + gframe == args.batch_size, "Error: lframe + gframe should be equal to batch_size!!!"
+
+    # dataset_val = vid.VisDroneVID(
+    #         data_dir=exp.data_dir,
+    #         json_file=os.path.join(exp.data_dir, exp.val_ann),
+    #         name="val",
+    #         img_size=exp.test_size,
+    #         preproc=Vid_Val_Transform(),
+    #         lframe=exp.lframe_val,
+    #         gframe=exp.gframe_val,
+    #         mode="random",
+    #         val=True,
+    #         tnum=exp.tnum_val,
+    #     )
+
+    dataset_val = VidDroneVIDataset(
+            data_dir=exp.data_dir,
+            split="train",
+            img_size=exp.input_size,
+            preproc=Vid_Val_Transform(),
+            lframe=exp.lframe,
+            gframe=exp.gframe,
+            sample_mode="gl",
+            max_epoch_samples=-1,
+            gl_stride = 1, 
+        )
+    
+    val_loader = vid.vid_val_loader(batch_size=exp.lframe_val + exp.gframe_val, data_num_workers=4, dataset=dataset_val, )
+
+
 
     trainer = Trainer(exp, args, val_loader, val=True)
 

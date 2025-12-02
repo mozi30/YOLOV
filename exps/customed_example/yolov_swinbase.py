@@ -64,23 +64,40 @@ class Exp(MyExp):
 
         self.gmode = True
         self.lmode = True
-        self.lframe = 0
-        self.lframe_val = 0
-        self.gframe = 2
-        self.gframe_val = 2 #config your gframe_val and gframe here
-        self.use_loc_emd = False
+        self.lframe = 2
+        self.lframe_val = 2
+        self.gframe = 0
+        self.gframe_val = 0 #config your gframe_val and gframe here
+
+        self.agg_type='msa'
+        self.ota_mode = True
+        self.decouple_reg = True
+        self.head=4
+        self.use_pre_nms = False
+
+        self.defualt_p = 50
+        self.sim_thresh = 0.7
+        self.use_score = True
+
+        self.ota_mode = True
+        self.ota_cls = True
+        
+
+        self.vid_cls = True
+        self.vid_reg = False # Maybe add later
+
+        self.use_loc_emd = True
         self.iou_base = False
-        self.reconf = True
         self.loc_fuse_type = 'identity'
         self.output_dir = "./V++_outputs"
         self.stem_lr_ratio = 0.1
-        self.ota_mode = True
-        self.use_pre_nms = False
+        
         self.cat_ota_fg = False
-        self.agg_type='msa'
+        
+        self.reconf = True
         self.minimal_limit = 50
         self.conf_sim_thresh = 0.99
-        self.decouple_reg = True
+        
 
         self.pretrain_img_size = 544
         self.window_size = 7
@@ -91,8 +108,8 @@ class Exp(MyExp):
         # nms threshold
         self.nmsthre = 0.7
 
-        self.tnum_train = 5000  # set the training temporal number
-        self.tnum_val = -1    # set the validation temporal number
+        self.max_epoch_samples = 150  # set the training temporal number
+        self.max_epoch_samples_val = 50 # set the validation temporal number
 
     def get_model(self):
         # rewrite get model func from yolox
@@ -262,7 +279,7 @@ class Exp(MyExp):
             lframe=self.lframe,
             gframe=self.gframe,
             sample_mode="gl",
-            max_epoch_samples=-1,
+            max_epoch_samples=self.max_epoch_samples,
             gl_stride = 1, 
         )
 
@@ -294,7 +311,7 @@ class Exp(MyExp):
             lframe=self.lframe,
             gframe=self.gframe,
             sample_mode="gl",
-            max_epoch_samples=-1,
+            max_epoch_samples=self.max_epoch_samples_val,
             gl_stride = 1, 
         )
 

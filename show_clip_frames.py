@@ -1,6 +1,9 @@
 import matplotlib.pyplot as plt
 import cv2
 
+from yolox.data.data_augment import Vid_Val_Transform
+from yolox.data.datasets.visdrone import VidDroneVIDataset
+
 def show_clip_frames(dataset, clip_index):
     """
     Displays one clip from the dataset.
@@ -48,15 +51,27 @@ def show_clip_frames(dataset, clip_index):
 if __name__ == "__main__":
     from yolox.data.datasets.vid  import VisDroneVID
 
-    dataset = VisDroneVID(
-        data_dir = "/home/mozi/datasets/visdrone/yolov",
-        json_file="/home/mozi/datasets/visdrone/yolov/annotations/imagenet_vid_train.json",
-        img_size=(640, 640),
-        lframe=16,          # set according to your setup
-        gframe=16,
-        mode="gl",
-        val=True           # or False depending on your setup
-    )
+    # dataset = VisDroneVID(
+    #     data_dir = "/home/mozi/datasets/visdrone/yolov",
+    #     json_file="/home/mozi/datasets/visdrone/yolov/annotations/imagenet_vid_train.json",
+    #     img_size=(640, 640),
+    #     lframe=16,          # set according to your setup
+    #     gframe=16,
+    #     mode="gl",
+    #     val=True           # or False depending on your setup
+    # )
+
+    dataset = VidDroneVIDataset(
+            data_dir="/home/mozi/datasets/visdrone/",
+            split="val",
+            img_size=(640, 640),
+            preproc=Vid_Val_Transform(),
+            lframe=8,
+            gframe=0,
+            sample_mode="gl",
+            max_epoch_samples=-1,
+            gl_stride = 3, 
+        )
 
     # Show the 1st clip (use different numbers to move between clips)
     show_clip_frames(dataset, clip_index=0)

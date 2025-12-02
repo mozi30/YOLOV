@@ -341,17 +341,37 @@ class VidDroneVIDataset(torchDataset):
                     res.append(all_uniform[i::split_num])
 
             elif self.sample_mode == "gl":
-                split_num = ele_len // max(1, lframe)
-                all_local = seq[:split_num * lframe]
-                # use stride over local clips
-                for i in range(0, split_num, self.gl_stride):
-                    l_clip = all_local[i * lframe:(i + 1) * lframe]
-                    others = seq[:i * lframe] + seq[(i + 1) * lframe:]
-                    g_clip = (
-                        random.sample(others, gframe)
-                        if gframe > 0 and len(others) >= gframe else []
-                    )
-                    res.append(l_clip + g_clip)
+                if lframe > 0:
+                    # local clip with stride self.gl_stride between frames inside the clip
+                    # e.g. lframe=4, gl_stride=3 -> [0,3,6,9], [1,4,7,10], ...
+                    # last index in a clip starting at s: s + (lframe - 1) * self.gl_stride
+                    max_start = ele_len - (lframe - 1) * self.gl_stride
+                    for start in range(0, max_start):
+                        # build local clip with stride inside
+                        indices = [start + j * self.gl_stride for j in range(lframe)]
+                        l_clip = [seq[idx] for idx in indices]
+
+                        # everything except the local indices
+                        used = set(indices)
+                        others = [seq[k] for k in range(ele_len) if k not in used]
+
+                        g_clip = (
+                            random.sample(others, gframe)
+                            if gframe > 0 and len(others) >= gframe else []
+                        )
+                        res.append(l_clip + g_clip)
+                else:
+                    # lframe == 0 -> only global frames
+                    # sample disjoint (or as many as possible) gframe-sized clips
+                    split_num = ele_len // max(1, gframe)
+                    if split_num == 0:
+                        continue
+                    tmp = seq[:]  # avoid in-place shuffle
+                    random.shuffle(tmp)
+                    for i in range(split_num):
+                        g_clip = tmp[i * gframe:(i + 1) * gframe]
+                        if len(g_clip) == gframe:
+                            res.append(g_clip)
             else:
                 raise ValueError(f"Unsupported mode: {self.sample_mode}")
 
