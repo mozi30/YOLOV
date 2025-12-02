@@ -3,8 +3,9 @@
 
 import os
 import torch.nn as nn
+from yolox.data.datasets.visdrone import VidDroneVIDataset
 from exps.yolov.yolov_base import Exp as MyExp
-from yolox.data.data_augment import Vid_Val_Transform
+from yolox.data.data_augment import TrainTransform, TrainTransform, Vid_Val_Transform
 import torch
 from loguru import logger
 from yolox.data.datasets import vid
@@ -17,13 +18,13 @@ class Exp(MyExp):
         self.exp_name = os.path.split(os.path.realpath(__file__))[1].split(".")[0]
         self.backbone_name = 'Swin_Base'
         # Define yourself dataset path
-        self.data_dir = "/home/mozi/datasets/visdrone/yolov" #set your dataset path
+        self.data_dir = "/home/mozi/datasets/visdrone" #set your dataset path
         self.train_ann = "annotations/imagenet_vid_train.json" #set your train annotation file
         self.val_ann = "annotations/imagenet_vid_val.json" #set your val annotation file
         self.num_classes = 10 #config you classes number here
         
-        self.max_epoch = 100
-        self.warmup_epochs = 5
+        self.max_epoch = 15
+        self.warmup_epochs = 2
         self.no_aug_epochs = 5
         self.pre_no_aug = 2
 
@@ -63,29 +64,52 @@ class Exp(MyExp):
 
         self.gmode = True
         self.lmode = True
-        self.lframe = 0
-        self.lframe_val = 0
-        self.gframe = 2
-        self.gframe_val = 2 #config your gframe_val and gframe here
-        self.use_loc_emd = False
+        self.lframe = 2
+        self.lframe_val = 2
+        self.gframe = 0
+        self.gframe_val = 0 #config your gframe_val and gframe here
+
+        self.agg_type='msa'
+        self.ota_mode = True
+        self.decouple_reg = True
+        self.head=4
+        self.use_pre_nms = False
+
+        self.defualt_p = 50
+        self.sim_thresh = 0.7
+        self.use_score = True
+
+        self.ota_mode = True
+        self.ota_cls = True
+        
+
+        self.vid_cls = True
+        self.vid_reg = False # Maybe add later
+
+        self.use_loc_emd = True
         self.iou_base = False
-        self.reconf = True
         self.loc_fuse_type = 'identity'
         self.output_dir = "./V++_outputs"
         self.stem_lr_ratio = 0.1
-        self.ota_mode = True
-        self.use_pre_nms = False
+        
         self.cat_ota_fg = False
-        self.agg_type='msa'
+        
+        self.reconf = True
         self.minimal_limit = 50
         self.conf_sim_thresh = 0.99
-        self.decouple_reg = True
+        
 
         self.pretrain_img_size = 544
         self.window_size = 7
 
-        self.tnum_train = 1500  # set the training temporal number
-        self.tnum_val = 500    # set the validation temporal number
+        # confidence threshold during evaluation/test,
+        # boxes whose scores are less than test_conf will be filtered
+        self.test_conf = 0.2
+        # nms threshold
+        self.nmsthre = 0.7
+
+        self.max_epoch_samples = 150  # set the training temporal number
+        self.max_epoch_samples_val = 50 # set the validation temporal number
 
     def get_model(self):
         # rewrite get model func from yolox
@@ -226,10 +250,26 @@ class Exp(MyExp):
         from yolox.data import TrainTransform
         from yolox.data.datasets.vid  import VisDroneVID
         assert batch_size == self.lframe + self.gframe
-        dataset = VisDroneVID(
+        # dataset = VisDroneVID(
+        #     data_dir=self.data_dir,
+        #     json_file=os.path.join(self.data_dir, self.train_ann),
+        #     name="train",
+        #     img_size=self.input_size,
+        #     preproc=TrainTransform(
+        #         max_labels=300,          # keep crowded-scene labels
+        #         flip_prob=self.flip_prob,
+        #         hsv_prob=self.hsv_prob,
+        #     ),
+        #     lframe=self.lframe,
+        #     gframe=self.gframe,
+        #     mode="gl",
+        #     val=False,
+        #     tnum=self.tnum_train,
+        # )
+
+        dataset = VidDroneVIDataset(
             data_dir=self.data_dir,
-            json_file=os.path.join(self.data_dir, self.train_ann),
-            name="train",
+            split="train",
             img_size=self.input_size,
             preproc=TrainTransform(
                 max_labels=300,          # keep crowded-scene labels
@@ -238,9 +278,9 @@ class Exp(MyExp):
             ),
             lframe=self.lframe,
             gframe=self.gframe,
-            mode="gl",
-            val=False,
-            tnum=self.tnum_train,
+            sample_mode="gl",
+            max_epoch_samples=self.max_epoch_samples,
+            gl_stride = 1, 
         )
 
         dataset = vid.get_trans_loader(batch_size=batch_size, data_num_workers=4, dataset=dataset)
@@ -250,17 +290,29 @@ class Exp(MyExp):
 
         assert batch_size == self.lframe_val+self.gframe_val
         from yolox.data.datasets.vid  import VisDroneVID
-        dataset_val = VisDroneVID(
+        # dataset_val = VisDroneVID(
+        #     data_dir=self.data_dir,
+        #     json_file=os.path.join(self.data_dir, self.val_ann),
+        #     name="val",
+        #     img_size=self.test_size,
+        #     preproc=Vid_Val_Transform(),
+        #     lframe=self.lframe_val,
+        #     gframe=self.gframe_val,
+        #     mode="random",
+        #     val=True,
+        #     tnum=self.tnum_val,
+        # )
+
+        dataset_val = VidDroneVIDataset(
             data_dir=self.data_dir,
-            json_file=os.path.join(self.data_dir, self.val_ann),
-            name="val",
-            img_size=self.test_size,
+            split="val",
+            img_size=self.input_size,
             preproc=Vid_Val_Transform(),
-            lframe=self.lframe_val,
-            gframe=self.gframe_val,
-            mode="random",
-            val=True,
-            tnum=self.tnum_val,
+            lframe=self.lframe,
+            gframe=self.gframe,
+            sample_mode="gl",
+            max_epoch_samples=self.max_epoch_samples_val,
+            gl_stride = 1, 
         )
 
         val_loader = vid.get_trans_loader(batch_size=batch_size, data_num_workers=data_num_workers, dataset=dataset_val)

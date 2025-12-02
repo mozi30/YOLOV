@@ -1000,7 +1000,7 @@ class YOLOVHead(nn.Module):
 
             conf_mask = (detections[:, 4] * detections[:, 5] >= conf_thresh).squeeze()
             minimal_limit = self.kwargs.get('minimal_limit',0)
-            maximal_limit = self.kwargs.get('maximal_limit',0)
+            maximal_limit = self.kwargs.get('maximal_limit',300)
             if minimal_limit !=0:
                 # add a minimum limitation to the number of detections
                 if conf_mask.sum() < minimal_limit:
@@ -1010,7 +1010,7 @@ class YOLOVHead(nn.Module):
             if maximal_limit !=0:
                 # add a maximum limitation to the number of detections
                 if conf_mask.sum() > maximal_limit:
-                    logger.warning('current obj above conf thresh: %d' % conf_mask.sum())
+                    #logger.warning('current obj above conf thresh: %d' % conf_mask.sum())
                     # #solution 1,
                     _, top_idx = torch.topk(detections[:, 4] * detections[:, 5], maximal_limit)
                     conf_mask = torch.zeros_like(conf_mask)
