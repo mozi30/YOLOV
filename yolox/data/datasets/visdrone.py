@@ -61,6 +61,7 @@ class VidDroneVIDataset(torchDataset):
         self.annotations = self.build_dataset_from_directory()
         self.gl_stride = max(1, gl_stride)
         self.val = (self.split == "val")
+        self.input_dim = img_size
 
         assert self.gframe + self.lframe > 0, "gframe and lframe cannot be both zero."
 

@@ -143,7 +143,9 @@ def main(exp, args):
     # val_loader = vid.vid_val_loader(batch_size=lframe + gframe, data_num_workers=4, dataset=dataset_val, )
 
     assert lframe + gframe == args.batch_size, "Error: lframe + gframe should be equal to batch_size!!!"
-
+    exp.gframe_val = gframe
+    exp.lframe_val = lframe
+    assert exp.lframe_val + exp.gframe_val == args.batch_size, "Error: exp.lframe_val + exp.gframe_val should be equal to batch_size!!!"
     # dataset_val = vid.VisDroneVID(
     #         data_dir=exp.data_dir,
     #         json_file=os.path.join(exp.data_dir, exp.val_ann),
@@ -159,17 +161,17 @@ def main(exp, args):
 
     dataset_val = VidDroneVIDataset(
             data_dir=exp.data_dir,
-            split="train",
+            split="val",
             img_size=exp.input_size,
             preproc=Vid_Val_Transform(),
             lframe=exp.lframe,
             gframe=exp.gframe,
             sample_mode="gl",
             max_epoch_samples=-1,
-            gl_stride = 1, 
+            gl_stride = 5,
         )
-    
-    val_loader = vid.vid_val_loader(batch_size=exp.lframe_val + exp.gframe_val, data_num_workers=4, dataset=dataset_val, )
+
+    val_loader = vid.vid_val_loader(batch_size=exp.lframe_val + exp.gframe_val, data_num_workers=8, dataset=dataset_val, )
 
 
 

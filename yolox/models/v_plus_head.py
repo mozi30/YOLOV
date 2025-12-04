@@ -1000,7 +1000,7 @@ class YOLOVHead(nn.Module):
 
             conf_mask = (detections[:, 4] * detections[:, 5] >= conf_thresh).squeeze()
             minimal_limit = self.kwargs.get('minimal_limit',0)
-            maximal_limit = self.kwargs.get('maximal_limit',300)
+            maximal_limit = self.kwargs.get('maximal_limit',0)
             if minimal_limit !=0:
                 # add a minimum limitation to the number of detections
                 if conf_mask.sum() < minimal_limit:

@@ -1,15 +1,15 @@
-#!/usr/bin/env python3
-# -*- coding:utf-8 -*-
-
 import os
 import torch.nn as nn
 from yolox.data.datasets.visdrone import VidDroneVIDataset
-from exps.yolov.yolov_base import Exp as MyExp
 from yolox.data.data_augment import TrainTransform, TrainTransform, Vid_Val_Transform
+import sys
 import torch
+sys.path.append("..")
+from exps.yolov.yolov_base import Exp as MyExp
 from loguru import logger
 from yolox.data.datasets import vid
 
+#notes: ref to its base version
 class Exp(MyExp):
     def __init__(self):
         super(Exp, self).__init__()
@@ -21,95 +21,38 @@ class Exp(MyExp):
         self.data_dir = "/root/datasets/visdrone_blacked" #set your dataset path
         self.train_ann = "annotations/imagenet_vid_train.json" #set your train annotation file
         self.val_ann = "annotations/imagenet_vid_val.json" #set your val annotation file
-        self.num_classes = 10 #config you classes number here
-        
-        self.max_epoch = 10
-        self.warmup_epochs = 1
-        self.no_aug_epochs = 2
-        self.pre_no_aug = 1
-
-        # Learning rate and optimizer
-        self.act = "silu" # Activation function
-        self.data_num_workers = 8 # Number of data loading workers
-        self.basic_lr_per_img = 0.01 / 64
-        self.min_lr_ratio = 0.01
-
-        # Input size and multiscale training
-        self.multiscale_range = 2
         self.input_size = (544, 960)
         self.test_size = (544, 960)
-
+        self.multiscale_range = 0
+        self.max_epoch = 150
+        self.warmup_epochs = 10
+        self.no_aug_epochs = 10
+        self.pre_no_aug = 2
+        self.use_aug = False
         self.eval_interval = 1
-
-        # -------------------------------
-        # Augmentation / multiscale
-        # -------------------------------
-        self.mosaic_prob = 0.5   
-        self.mosaic_scale = (0.5, 1.5)
-        self.enable_mixup = True
-        self.hsv_prob = 0.5
-        self.flip_prob = 0.5
-
-        # geometric: slightly softened
-        self.degrees = 5.0            
-        self.translate = 0.1          
-        self.shear = 2.0           
-        
-        # EMA (Exponential Moving Average)
-        self.ema = True
-        self.weight_decay = 1e-4
-
-        self.test_conf = 0.01
-        self.nmsthre = 0.2
-
         self.gmode = True
-        self.lmode = True
+        self.lmode = False
         self.lframe = 0
         self.lframe_val = 0
-        self.gframe = 16
-        self.gframe_val = 16 #config your gframe_val and gframe here
-
-        self.agg_type='msa'
-        self.ota_mode = True
-        self.decouple_reg = True
-        self.head=4
-        self.use_pre_nms = False
-
-        self.defualt_p = 50
-        self.sim_thresh = 0.7
-        self.use_score = True
-
-        self.ota_mode = True
-        self.ota_cls = True
-        
-
-        self.vid_cls = True
-        self.vid_reg = False # Maybe add later
-
-        self.use_loc_emd = True
+        self.gframe = 4
+        self.gframe_val = 4
+        self.use_loc_emd = False
         self.iou_base = False
-        self.loc_fuse_type = 'identity'
-        self.output_dir = "./V++_outputs"
-        self.stem_lr_ratio = 0.1
-        
-        self.cat_ota_fg = False
-        
         self.reconf = True
+        self.loc_fuse_type = 'identity'
+        self.output_dir = "./V++_new_outputs"
+        self.stem_lr_ratio = 0.1
+        self.ota_mode = True
+        self.use_pre_nms = False
+        self.cat_ota_fg = False
+        self.agg_type='msa'
         self.minimal_limit = 50
         self.conf_sim_thresh = 0.99
-        
-
-        self.pretrain_img_size = 544
+        self.decouple_reg = True
         self.window_size = 9
 
-        # confidence threshold during evaluation/test,
-        # boxes whose scores are less than test_conf will be filtered
-        self.test_conf = 0.2
-        # nms threshold
-        self.nmsthre = 0.7
-
-        self.max_epoch_samples = 1000  # set the training temporal number
-        self.max_epoch_samples_val = -1 # set the validation temporal number
+        self.max_epoch_samples = 500  # set the training temporal number
+        self.max_epoch_samples_val = 500 # set the validation temporal number
 
     def get_model(self):
         # rewrite get model func from yolox
@@ -176,7 +119,7 @@ class Exp(MyExp):
 
 
         for layer in backbone.parameters():
-            layer.requires_grad = False  # temp no fix the backbone
+            layer.requires_grad = False  # fix the backbone
 
         more_args = {'use_ffn': self.use_ffn, 'use_time_emd': self.use_time_emd, 'use_loc_emd': self.use_loc_emd,
                      'loc_fuse_type': self.loc_fuse_type, 'use_qkv': self.use_qkv,
@@ -193,8 +136,17 @@ class Exp(MyExp):
                          pre_nms=self.pre_nms, ave=self.ave, defulat_pre=self.defualt_pre, test_conf=self.test_conf,
                          use_mask=self.use_mask,gmode=self.gmode,lmode=self.lmode,both_mode=self.both_mode,
                          localBlocks = self.localBlocks,**more_args)
-        for layer in head.parameters():
-            layer.requires_grad = True 
+
+
+        for layer in head.stems.parameters():
+            layer.requires_grad = False  # set stem fixed
+        for layer in head.reg_convs.parameters():
+            layer.requires_grad = False
+            layer.requires_grad = False
+        for layer in head.cls_convs.parameters():
+            layer.requires_grad = False
+        for layer in head.reg_preds.parameters():
+            layer.requires_grad = False
 
         self.model = YOLOV(backbone, head)
 
@@ -244,11 +196,11 @@ class Exp(MyExp):
 
         return self.optimizer
 
-
     def get_data_loader(
             self, batch_size, is_distributed, no_aug=False, cache_img=False):
         from yolox.data import TrainTransform
         from yolox.data.datasets.vid  import VisDroneVID
+        from yolox.data.datasets.mosaicdetection import MosaicDetection_VID
         assert batch_size == self.lframe + self.gframe
         # dataset = VisDroneVID(
         #     data_dir=self.data_dir,
@@ -280,8 +232,31 @@ class Exp(MyExp):
             gframe=self.gframe,
             sample_mode="gl",
             max_epoch_samples=self.max_epoch_samples,
-            gl_stride = 5, 
+            gl_stride = 5,
         )
+
+        if self.use_aug and not no_aug:
+            logger.info("Using Mosaic Augmentation...")
+            dataset = MosaicDetection_VID(
+                dataset,
+                mosaic=False,  # safe for VisDrone
+                img_size=self.input_size,
+                preproc=TrainTransform(
+                    max_labels=300,
+                    flip_prob=self.flip_prob,
+                    hsv_prob=self.hsv_prob,
+                ),
+                degrees=self.degrees,
+                translate=self.translate,
+                mosaic_scale=self.mosaic_scale,
+                mixup_scale=self.mixup_scale,
+                shear=self.shear,
+                perspective=self.perspective,
+                enable_mixup=self.enable_mixup,
+                mosaic_prob=self.mosaic_prob,
+                mixup_prob=self.mixup_prob,
+                dataset_path=self.data_dir,
+            )
 
         dataset = vid.get_trans_loader(batch_size=batch_size, data_num_workers=4, dataset=dataset)
         return dataset
@@ -312,7 +287,7 @@ class Exp(MyExp):
             gframe=self.gframe_val,
             sample_mode="gl",
             max_epoch_samples=self.max_epoch_samples_val,
-            gl_stride = 5, 
+            gl_stride = 5,
         )
 
         val_loader = vid.get_trans_loader(batch_size=batch_size, data_num_workers=data_num_workers, dataset=dataset_val)
