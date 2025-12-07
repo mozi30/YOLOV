@@ -404,9 +404,9 @@ class Trainer:
         torch.cuda.set_device(self.local_rank)
         model = self.exp.get_model()
         model = self.resume_train(model)
-        logger.info(
-            "Model Summary: {}".format(get_model_info(model, self.exp.test_size))
-        )
+        # logger.info(
+        #     "Model Summary: {}".format(get_model_info(model, self.exp.test_size))
+        # )
         model.to(self.device)
         self.model = model
         evalmodel = self.model

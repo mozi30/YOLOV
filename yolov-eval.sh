@@ -38,24 +38,32 @@ echo ""
 #   --lframe 0 \
 #   --gframe 8 \
 
-python tools/vid_eval.py \
+# python tools/vid_eval.py \
+#   -f exps/customed_example/yolov_swinbase_v2.py\
+#   -c /root/TemporalAttentionPlayground/YOLOV/V++_w9_g4/yolov_swinbase_v2/best_ckpt.pth \
+#   -b 4 \
+#   -d 1 \
+#   --fp16 \
+#   --lframe 0 \
+#   --gframe 4 \
+
+#   python tools/vid_eval.py \
+#   -f exps/customed_example/yolov_swinbase_v2.py\
+#   -c /root/TemporalAttentionPlayground/YOLOV/V++_w9_g4/yolov_swinbase_v2/best_ckpt.pth \
+#   -b 6 \
+#   -d 1 \
+#   --fp16 \
+#   --lframe 0 \
+#   --gframe 6 \
+
+    python tools/vid_eval.py \
   -f exps/customed_example/yolov_swinbase_v2.py\
-  -c /root/TemporalAttentionPlayground/YOLOV/V++_new_outputs/yolov_swinbase_v2/best_ckpt.pth\
+  -c /root/TemporalAttentionPlayground/YOLOV/V++_w8_gl_conf_01/yolov_swinbase_v2/last_epoch_ckpt.pth \
   -b 16 \
   -d 1 \
   --fp16 \
   --lframe 0 \
   --gframe 16 \
-
-python tools/vid_eval.py \
-  -f exps/customed_example/yolov_swinbase_v2.py\
-  -c /root/TemporalAttentionPlayground/YOLOV/V++_new_outputs/yolov_swinbase_v2/best_ckpt.pth\
-  -b 32 \
-  -d 1 \
-  --fp16 \
-  --lframe 0 \
-  --gframe 32 \
-
 
 
 echo ""

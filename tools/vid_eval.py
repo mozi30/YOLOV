@@ -162,19 +162,19 @@ def main(exp, args):
     dataset_val = VidDroneVIDataset(
             data_dir=exp.data_dir,
             split="val",
-            img_size=exp.input_size,
+            img_size=exp.test_size,
             preproc=Vid_Val_Transform(),
-            lframe=exp.lframe,
-            gframe=exp.gframe,
+            lframe=exp.lframe_val,
+            gframe=exp.gframe_val,
             sample_mode="gl",
             max_epoch_samples=-1,
-            gl_stride = 5,
+            gl_stride = 10,
         )
 
     val_loader = vid.vid_val_loader(batch_size=exp.lframe_val + exp.gframe_val, data_num_workers=8, dataset=dataset_val, )
 
 
-
+    print("Gframe and Lframe for eval: ", exp.gframe_val, exp.lframe_val)
     trainer = Trainer(exp, args, val_loader, val=True)
 
 
@@ -182,7 +182,6 @@ if __name__ == "__main__":
     args = make_parser().parse_args()
 
     exp = get_exp(args.exp_file, args.name)
-    exp.test_size = (args.tsize, args.tsize)
 
 
     if args.lframe != None: exp.lframe_val = int(args.lframe)

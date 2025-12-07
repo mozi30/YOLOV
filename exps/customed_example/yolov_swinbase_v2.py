@@ -24,34 +24,51 @@ class Exp(MyExp):
         self.input_size = (544, 960)
         self.test_size = (544, 960)
         self.multiscale_range = 0
-        self.max_epoch = 150
-        self.warmup_epochs = 10
+        self.max_epoch = 60
+        self.warmup_epochs = 5
         self.no_aug_epochs = 10
         self.pre_no_aug = 2
         self.use_aug = False
         self.eval_interval = 1
+        self.basic_lr_per_img = 0.0005 / 64.0
         self.gmode = True
-        self.lmode = False
-        self.lframe = 0
-        self.lframe_val = 0
-        self.gframe = 4
-        self.gframe_val = 4
-        self.use_loc_emd = False
+        self.lmode = True
+        self.lframe = 8
+        self.lframe_val = 8
+        self.gframe = 0
+        self.gframe_val = 0
+        self.use_mask = False
+        self.ave = True
+        self.local_mask = False
+        #which branch to mask for local_mask, cls or reg or ''
+        self.local_mask_branch=['cls','reg']
+        self.defualt_p = 300
+
+        #LocalAgg so not important -----
+        #self.loc_fuse_type = 'add'
+        #self.loc_conf     = True
+        #self.pure_pos_emb = False
+        #----
+        self.use_loc_emd = True
         self.iou_base = False
         self.reconf = True
-        self.loc_fuse_type = 'identity'
-        self.output_dir = "./V++_new_outputs"
+        self.decouple_reg = True
+        self.output_dir = "./V++_w8_gl_conf_01"
         self.stem_lr_ratio = 0.1
         self.ota_mode = True
         self.use_pre_nms = False
         self.cat_ota_fg = False
         self.agg_type='msa'
         self.minimal_limit = 50
+        self.maximal_limit = 0
+        self.sim_thresh = 0.75
         self.conf_sim_thresh = 0.99
         self.decouple_reg = True
         self.window_size = 9
 
-        self.max_epoch_samples = 500  # set the training temporal number
+        
+
+        self.max_epoch_samples = 2000  # set the training temporal number
         self.max_epoch_samples_val = 500 # set the validation temporal number
 
     def get_model(self):
@@ -128,8 +145,8 @@ class Exp(MyExp):
                      'reconf': self.reconf, 'ota_mode': self.ota_mode, 'ota_cls': self.ota_cls,
                      'traj_linking': self.traj_linking,
                      'iou_window': self.iou_window, 'globalBlocks': self.globalBlocks, 'use_pre_nms': self.use_pre_nms,
-                     'cat_ota_fg': self.cat_ota_fg, 'agg_type': self.agg_type, 'minimal_limit': self.minimal_limit,
-                     'conf_sim_thresh': self.conf_sim_thresh, 'decouple_reg':self.decouple_reg,
+                     'cat_ota_fg': self.cat_ota_fg, 'agg_type': self.agg_type, 'minimal_limit': self.minimal_limit, 
+                     'maximal_limit': self.maximal_limit, 'conf_sim_thresh': self.conf_sim_thresh, 'decouple_reg':self.decouple_reg,
                      }
         head = YOLOVHead(self.num_classes, self.width, in_channels=in_channels, heads=self.head, drop=self.drop_rate,
                          use_score=self.use_score, defualt_p=self.defualt_p, sim_thresh=self.sim_thresh,
@@ -138,15 +155,49 @@ class Exp(MyExp):
                          localBlocks = self.localBlocks,**more_args)
 
 
-        for layer in head.stems.parameters():
-            layer.requires_grad = False  # set stem fixed
-        for layer in head.reg_convs.parameters():
-            layer.requires_grad = False
-            layer.requires_grad = False
-        for layer in head.cls_convs.parameters():
-            layer.requires_grad = False
-        for layer in head.reg_preds.parameters():
-            layer.requires_grad = False
+        for p in head.stems.parameters():
+            p.requires_grad = False
+
+        for p in head.reg_convs.parameters():
+            p.requires_grad = False
+
+        for p in head.cls_convs.parameters():
+            p.requires_grad = False
+
+        for p in head.reg_preds.parameters():
+            p.requires_grad = False
+
+        for p in head.cls_preds.parameters():
+            p.requires_grad = False
+
+        for p in head.obj_preds.parameters():
+            p.requires_grad = False
+
+            #---------------------
+
+        for p in head.agg.parameters():        # MSA temporal attention
+            p.requires_grad = True
+
+        if hasattr(head, "agg_iou"):
+            for p in head.agg_iou.parameters(): 
+                p.requires_grad = True
+
+        for p in head.cls_convs2.parameters():
+            p.requires_grad = True
+
+        if hasattr(head, "reg_convs2"):
+            for p in head.reg_convs2.parameters():
+                p.requires_grad = True
+
+        for p in head.cls_pred.parameters():
+            p.requires_grad = True
+
+        for p in head.obj_pred.parameters():
+            p.requires_grad = True
+
+        if hasattr(head, "reg_pred"):
+            for p in head.reg_pred.parameters():
+                p.requires_grad = True
 
         self.model = YOLOV(backbone, head)
 
@@ -232,7 +283,7 @@ class Exp(MyExp):
             gframe=self.gframe,
             sample_mode="gl",
             max_epoch_samples=self.max_epoch_samples,
-            gl_stride = 5,
+            gl_stride = 10,
         )
 
         if self.use_aug and not no_aug:
@@ -281,13 +332,13 @@ class Exp(MyExp):
         dataset_val = VidDroneVIDataset(
             data_dir=self.data_dir,
             split="val",
-            img_size=self.input_size,
+            img_size=self.test_size,
             preproc=Vid_Val_Transform(),
             lframe=self.lframe_val,
             gframe=self.gframe_val,
             sample_mode="gl",
             max_epoch_samples=self.max_epoch_samples_val,
-            gl_stride = 5,
+            gl_stride = 10,
         )
 
         val_loader = vid.get_trans_loader(batch_size=batch_size, data_num_workers=data_num_workers, dataset=dataset_val)

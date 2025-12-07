@@ -666,7 +666,6 @@ class YOLOVHead(nn.Module):
 
 
         loss_refined_iou = 0
-
         if self.ota_mode:
             if self.kwargs.get('reconf', True):
                 loss_refined_obj = (
@@ -954,20 +953,22 @@ class YOLOVHead(nn.Module):
         ]
         return num_fg, gt_matched_classes, pred_ious_this_matching, matched_gt_inds
 
-    def postprocess_widx(self, prediction, num_classes, nms_thre=0.5, ota_idxs=None,conf_thresh=0.001):
-        # find topK predictions, play the same role as RPN
-        '''
-
+    def postprocess_widx(self, prediction, num_classes, nms_thre=0.5, ota_idxs=None, conf_thresh=0.05):
+        """
         Args:
-            prediction: [batch,feature_num,5+clsnum]
-            num_classes:
-            conf_thre:
-            conf_thre_high:
-            nms_thre:
+            prediction: [batch, feature_num, 5 + num_classes]  (cx, cy, w, h, obj, cls_logits...)
+            num_classes: number of classes
+            nms_thre: IoU threshold for NMS. Higher -> more boxes kept, lower -> more aggressive suppression.
+            ota_idxs: list of per-image indices selected by OTA (or None)
+            conf_thresh: base confidence threshold on obj_conf * cls_conf
 
         Returns:
-            [batch,topK,5+clsnum]
-        '''
+            output:        list[Tensor] per image, shape [N_det, 5 + 1 + num_classes] (x1,y1,x2,y2,obj,cls_conf,cls_idx,cls_logits...)
+            output_index:  list[Tensor] per image, indices in the original feature grid
+            refined_obj_masks: Tensor[sum_dets, 1] with FG/BG flags (mostly for OTA / refined obj loss)
+            reorder_cls:   list for OTA reordering (may contain None)
+        """
+        # Convert [cx, cy, w, h] -> [x1, y1, x2, y2]
         box_corner = prediction.new(prediction.shape)
         box_corner[:, :, 0] = prediction[:, :, 0] - prediction[:, :, 2] / 2
         box_corner[:, :, 1] = prediction[:, :, 1] - prediction[:, :, 3] / 2
@@ -975,132 +976,157 @@ class YOLOVHead(nn.Module):
         box_corner[:, :, 3] = prediction[:, :, 1] + prediction[:, :, 3] / 2
         prediction[:, :, :4] = box_corner[:, :, :4]
 
-        output = [None for _ in range(len(prediction))]
-        output_index = [None for _ in range(len(prediction))]
-        reorder_cls = [None for _ in range(len(prediction))]
+        batch_size = prediction.size(0)
+        output = [None for _ in range(batch_size)]
+        output_index = [None for _ in range(batch_size)]
+        reorder_cls = [None for _ in range(batch_size)]
         refined_obj_masks = []
+
+        minimal_limit = self.kwargs.get('minimal_limit', 0)
+        maximal_limit = self.kwargs.get('maximal_limit', 0)
+        use_pre_nms = self.kwargs.get('use_pre_nms', True)
+        cat_ota_fg = self.kwargs.get('cat_ota_fg', True)
+
         for i, image_pred in enumerate(prediction):
-            #take ota idxs as output in training mode
-            obj_mask = torch.zeros(0,1)
+            # per-image FG/BG mask for refined obj loss
+            obj_mask = torch.zeros(0, 1, device=image_pred.device, dtype=torch.long)
+            # make sure abs_idx always exists in this scope
+            abs_idx = torch.empty(0, dtype=torch.long)
 
             if not image_pred.size(0):
                 continue
-            # Get score and class with highest confidence
-            class_conf, class_pred = torch.max(image_pred[:, 5: 5 + num_classes], 1, keepdim=True)
-            # Detections ordered as (x1, y1, x2, y2, obj_conf, class_conf, class_pred)
+
+            # class_conf: [N, 1], class_pred: [N, 1]
+            class_conf, class_pred = torch.max(image_pred[:, 5:5 + num_classes], 1, keepdim=True)
+
+            # detections: [N, 4 + 1(obj) + 1(cls_conf) + 1(cls_idx) + num_classes]
             detections = torch.cat(
-                (image_pred[:, :5], class_conf, class_pred.float(), image_pred[:, 5: 5 + num_classes]), 1)
+                (image_pred[:, :5], class_conf, class_pred.float(), image_pred[:, 5:5 + num_classes]),
+                dim=1,
+            )
+
+            # If OTA indices are provided and we want to concatenate them as FG
             if ota_idxs is not None:
-                if len(ota_idxs[i]) > 0 and self.kwargs.get('cat_ota_fg',True):
+                if ota_idxs[i] is not None and len(ota_idxs[i]) > 0 and cat_ota_fg:
                     ota_idx = ota_idxs[i]
+                    # first, store OTA-selected boxes directly
                     output[i] = detections[ota_idx, :]
                     output_index[i] = ota_idx.cpu()
                     tmp_ota_mask = torch.ones_like(output_index[i]).unsqueeze(1)
-                    obj_mask = torch.cat((obj_mask, tmp_ota_mask))
+                    obj_mask = torch.cat((obj_mask.cpu(), tmp_ota_mask), dim=0)
 
-            conf_mask = (detections[:, 4] * detections[:, 5] >= conf_thresh).squeeze()
-            minimal_limit = self.kwargs.get('minimal_limit',0)
-            maximal_limit = self.kwargs.get('maximal_limit',0)
-            if minimal_limit !=0:
-                # add a minimum limitation to the number of detections
+            # confidence mask on obj_conf * cls_conf
+            conf_mask = (detections[:, 4] * detections[:, 5] >= conf_thresh)
+
+            # enforce minimal_limit (if set)
+            if minimal_limit != 0:
                 if conf_mask.sum() < minimal_limit:
-                    #get top minimal_limit detections
                     _, top_idx = torch.topk(detections[:, 4] * detections[:, 5], minimal_limit)
                     conf_mask[top_idx] = True
-            if maximal_limit !=0:
-                # add a maximum limitation to the number of detections
-                if conf_mask.sum() > maximal_limit:
-                    #logger.warning('current obj above conf thresh: %d' % conf_mask.sum())
-                    # #solution 1,
-                    _, top_idx = torch.topk(detections[:, 4] * detections[:, 5], maximal_limit)
-                    conf_mask = torch.zeros_like(conf_mask)
-                    conf_mask[top_idx] = True
 
-                    # #solution 2, only for testing
-                    # conf_idx = torch.where(conf_mask)[0]
-                    # detections_tmp = detections[conf_mask]
-                    # nms_out_index = torchvision.ops.batched_nms(
-                    #     detections_tmp[:, :4],
-                    #     detections_tmp[:, 4] * detections_tmp[:, 5],
-                    #     detections_tmp[:, 6],
-                    #     0.9,
-                    # )
-                    # conf_mask = torch.zeros_like(conf_mask)
-                    # conf_mask[conf_idx[nms_out_index]] = True
-                    # logger.warning('after nms, current obj above conf thresh: %d' % conf_mask.sum())
+            # enforce maximal_limit (if set)
+            if maximal_limit != 0:
+                if conf_mask.sum() > maximal_limit:
+                    _, top_idx = torch.topk(detections[:, 4] * detections[:, 5], maximal_limit)
+                    new_mask = torch.zeros_like(conf_mask)
+                    new_mask[top_idx] = True
+                    conf_mask = new_mask
 
             conf_idx = torch.where(conf_mask)[0]
-            #logger.info('current obj above conf thresh: %d' % conf_idx.shape[0])
             detections = detections[conf_mask]
+
             if not detections.size(0):
+                # no detections kept for this image
                 refined_obj_masks.append(obj_mask)
                 continue
 
-            if self.kwargs.get('use_pre_nms',True):
+            # ---- DEBUG: pre-NMS count ----
+            #print(f"[postprocess_widx] img {i}: before NMS = {detections.shape[0]} boxes")
+
+            # NMS: class-sensitive (batched by class index)
+            if use_pre_nms:
                 nms_out_index = torchvision.ops.batched_nms(
-                    detections[:, :4],
-                    detections[:, 4] * detections[:, 5],
-                    detections[:, 6],
+                    detections[:, :4],                   # [x1,y1,x2,y2]
+                    detections[:, 4] * detections[:, 5], # score = obj * cls_conf
+                    detections[:, 6],                    # class index
                     nms_thre,
                 )
             else:
-                nms_out_index = torch.arange(detections.shape[0])
+                nms_out_index = torch.arange(
+                    detections.shape[0],
+                    device=detections.device,
+                    dtype=torch.long,
+                )
 
-            #get rid of the idx already in ota_idxs
-            if ota_idxs!= None and ota_idxs[i] is not None and len(ota_idxs[i]) > 0:#in ota mode
-                if not self.kwargs.get('use_pre_nms',True) :
-                    if not self.kwargs.get('cat_ota_fg',True):
+            # ---- DEBUG: post-NMS count ----
+            #print(f"[postprocess_widx] img {i}: after NMS = {nms_out_index.numel()} boxes (nms_thre={nms_thre})")
 
-                        # not cat ota_idxs, set these ota idx to fg while others to bg
+            # Handle OTA case: remove / mark OTA indices, build abs_idx
+            if ota_idxs is not None and ota_idxs[i] is not None and len(ota_idxs[i]) > 0:
+                if not use_pre_nms:
+                    # no pre-NMS, we manually flag OTA indices
+                    if not cat_ota_fg:
+                        # Only OTA indices are FG; all others BG
                         obj_mask = torch.zeros_like(nms_out_index).unsqueeze(1)
                         tmp_reorder = []
-                        for j in nms_out_index:
-                            tmp_idx = torch.where(ota_idxs[i]==conf_idx[j])[0]
+                        for j_idx, j in enumerate(nms_out_index):
+                            tmp_idx = torch.where(ota_idxs[i] == conf_idx[j])[0]
                             if len(tmp_idx):
-                                obj_mask[j] = 1
+                                obj_mask[j_idx, 0] = 1
                                 tmp_reorder.append(tmp_idx[0])
-                        #print('total idxs: %d, in ota idxs: %d, total ota idxs %d' % (nms_out_index.shape[0], len(tmp_reorder), ota_idxs[i].shape[0]))
                         reorder_cls[i] = tmp_reorder
                         abs_idx = conf_idx[nms_out_index].cpu()
                     else:
-                        #cat ota_idxs and others which is set to bg
-                        abs_idx_out_ota = torch.tensor([conf_idx[j] for j in nms_out_index if conf_idx[j] not in ota_idxs[i]])
-                        abs_idx = abs_idx_out_ota
-                        bg_mask = torch.zeros_like(abs_idx_out_ota).cpu()
-                        obj_mask = torch.cat((obj_mask.type_as(bg_mask), bg_mask.unsqueeze(1)))
+                        # Concatenate OTA FG + the rest as BG
+                        abs_idx_out_ota = torch.tensor(
+                            [conf_idx[j] for j in nms_out_index if conf_idx[j] not in ota_idxs[i]],
+                            dtype=torch.long,
+                            device=conf_idx.device,
+                        )
+                        abs_idx = abs_idx_out_ota.cpu()
+                        bg_mask = torch.zeros_like(abs_idx_out_ota, dtype=torch.long).cpu()
+                        obj_mask = torch.cat((obj_mask.cpu(), bg_mask.unsqueeze(1)), dim=0)
                 else:
-                    abs_idx = None
+                    # use_pre_nms=True & OTA: for now we don't add extra indices
+                    abs_idx = torch.empty(0, dtype=torch.long)
             else:
+                # Non-OTA mode: all kept indices are BG by default
                 abs_idx_out_ota = conf_idx[nms_out_index]
                 abs_idx = abs_idx_out_ota.cpu()
-                bg_mask = torch.zeros_like(abs_idx_out_ota).cpu()
-                obj_mask = torch.cat((obj_mask.type_as(bg_mask), bg_mask.unsqueeze(1)))
+                bg_mask = torch.zeros_like(abs_idx_out_ota, dtype=torch.long).cpu()
+                obj_mask = torch.cat((obj_mask.cpu(), bg_mask.unsqueeze(1)), dim=0)
 
-
+            # Apply NMS selection
             detections = detections[nms_out_index]
 
+            # Aggregate detections
             if output[i] is None:
                 output[i] = detections
             else:
-                output[i] = torch.cat((output[i], detections))
+                output[i] = torch.cat((output[i], detections), dim=0)
 
+            # Aggregate indices
             if output_index[i] is None:
-                if self.kwargs.get('use_pre_nms',True):
-                    output_index[i] = conf_idx[nms_out_index]
+                if use_pre_nms:
+                    output_index[i] = conf_idx[nms_out_index].cpu()
                 else:
-                    output_index[i] = abs_idx
+                    output_index[i] = abs_idx  # may be empty tensor, but defined
             else:
-                if abs_idx.shape[0] != 0:
-                    output_index[i] = torch.cat((output_index[i], abs_idx))
+                # only concat if we have any abs_idx
+                if abs_idx.numel() > 0:
+                    output_index[i] = torch.cat((output_index[i], abs_idx), dim=0)
 
             refined_obj_masks.append(obj_mask)
 
+        # Concatenate all obj masks across batch (may be empty)
         if len(refined_obj_masks) > 0:
-            refined_obj_masks = torch.cat(refined_obj_masks, 0)
+            refined_obj_masks = torch.cat(refined_obj_masks, dim=0)
         else:
-            refined_obj_masks = torch.zeros(0,1)
+            refined_obj_masks = torch.zeros(0, 1)
 
         return output, output_index, refined_obj_masks, reorder_cls
+
+
 
     def get_idx_predictions(self,prediction,idxs,num_classes):
         box_corner = prediction.new(prediction.shape)

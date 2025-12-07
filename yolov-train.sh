@@ -11,13 +11,16 @@ conda activate yolox
 pip install loguru
 echo "Starting training..."
 echo ""
-python tools/vid_train.py \
+while true; do
+    python tools/vid_train.py \
     -n yolov_swinbase_window_9_new \
     -f /root/TemporalAttentionPlayground/YOLOV/exps/customed_example/yolov_swinbase_v2.py \
-    --batch-size 4 \
+    --batch-size 8 \
     --fp16 \
     --resume \
-    -c '/root/TemporalAttentionPlayground/YOLOV/V++_new_outputs/yolov_swinbase_v2/best_ckpt.pth'
+    -c '/root/TemporalAttentionPlayground/YOLOV/V++_w8_gl_conf_01/yolov_swinbase_v2/latest_ckpt.pth'
+done
+
 
 echo ""
 echo "=========================================="
