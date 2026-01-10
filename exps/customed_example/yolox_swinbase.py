@@ -61,8 +61,8 @@ class Exp(MyExp):
         self.ema = True
         self.weight_decay = 1e-4
 
-        self.test_conf = 0.01
-        self.nmsthre = 0.2
+        self.test_conf = 0.001
+        self.nmsthre = 0.5
 
         # Swin Transformer configuration
         self.backbone_name = "swin_base"  # Options: swin_tiny, swin_small, swin_base

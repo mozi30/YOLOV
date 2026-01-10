@@ -4,13 +4,15 @@
 
 import os
 import random
+from typing import Any, Dict, List, Optional
 import cv2
 import numpy as np
-
+from pycocotools.coco import COCO
+import torch
 from torch.utils.data.dataset import Dataset as torchDataset
-
+from enum import Enum
 from .datasets_wrapper import Dataset  # not used directly, but left for compatibility
-
+from dataclasses import dataclass, field
 
 VISDRONE_CATEGORIES = [
     {"id": 1,  "name": "pedestrian",        "supercategory": "person"},
@@ -25,6 +27,134 @@ VISDRONE_CATEGORIES = [
     {"id": 10, "name": "motor",             "supercategory": "vehicle"}
 ]
 
+class PerturbationType(str, Enum):
+    GAUSSIAN_NOISE = "gaussian_noise"
+    DEFOCUS_BLUR = "defocus_blur"
+    MOTION_BLUR = "motion_blur"
+    BRIGHTNESS_CHANGE = "brightness_change"
+    CONTRAST_CHANGE = "contrast_change"
+    PIXELATION = "pixelation"
+    JPEG_COMPRESSION = "jpeg_compression"
+
+class Severity(str, Enum):
+    LOW = "low"
+    MED = "med"
+    HIGH = "high"
+
+# ---- 3-level presets (assumes image float in [0,1]) ----
+# If you use uint8 [0..255], scale Gaussian std_dev by 255, etc.
+PRESETS: Dict[PerturbationType, Dict[Severity, Dict[str, Any]]] = {
+    PerturbationType.GAUSSIAN_NOISE: {
+        Severity.LOW:  {"std_dev": 0.01},
+        Severity.MED:  {"std_dev": 0.05},
+        Severity.HIGH: {"std_dev": 0.10},
+    },
+    PerturbationType.DEFOCUS_BLUR: {
+        Severity.LOW:  {"kernel_size": 3},
+        Severity.MED:  {"kernel_size": 7},
+        Severity.HIGH: {"kernel_size": 11},
+    },
+    PerturbationType.MOTION_BLUR: {
+        Severity.LOW:  {"kernel_size": 3,  "angle": 0.0},
+        Severity.MED:  {"kernel_size": 7, "angle": 0.0},
+        Severity.HIGH: {"kernel_size": 15, "angle": 0.0},
+    },
+    PerturbationType.BRIGHTNESS_CHANGE: {
+        Severity.LOW:  {"factor": 1.10},
+        Severity.MED:  {"factor": 1.25},
+        Severity.HIGH: {"factor": 1.45},
+    },
+    PerturbationType.CONTRAST_CHANGE: {
+        Severity.LOW:  {"factor": 1.10},
+        Severity.MED:  {"factor": 1.25},
+        Severity.HIGH: {"factor": 1.45},
+    },
+    PerturbationType.PIXELATION: {
+        Severity.LOW:  {"pixel_size": 2},
+        Severity.MED:  {"pixel_size": 4},
+        Severity.HIGH: {"pixel_size": 6},
+    },
+    PerturbationType.JPEG_COMPRESSION: {
+        Severity.LOW:  {"quality": 85},
+        Severity.MED:  {"quality": 55},
+        Severity.HIGH: {"quality": 25},
+    },
+}
+
+@dataclass
+class PerturbSpec:
+    type: PerturbationType
+    active: bool = True
+    severity: Severity = Severity.MED
+    p: float = 1.0           # probability to apply
+    dynamic: bool = False    # if True: jitter around preset
+
+@dataclass
+class PerturbationSettings:
+    enabled: bool = True
+    seed: Optional[int] = None
+    shuffle_order: bool = False
+    specs: List[PerturbSpec] = field(default_factory=list)
+
+    def rng(self) -> random.Random:
+        return random.Random(self.seed)
+
+    def set_active(self, ptype: PerturbationType, active: bool) -> None:
+        for s in self.specs:
+            if s.type == ptype:
+                s.active = active
+
+    def set_severity(self, ptype: PerturbationType, severity: Severity) -> None:
+        for s in self.specs:
+            if s.type == ptype:
+                s.severity = severity
+
+def resolve_params(spec: PerturbSpec, rng: random.Random) -> Dict[str, Any]:
+    """Convert (type, severity) -> concrete params, with optional dynamic jitter."""
+    params = dict(PRESETS[spec.type][spec.severity])
+
+    if not spec.dynamic:
+        return params
+
+    # Small, sane jitter around presets (edit if you want wider ranges)
+    if spec.type == PerturbationType.GAUSSIAN_NOISE:
+        sd = params["std_dev"]
+        params["std_dev"] = max(0.0, rng.uniform(0.7 * sd, 1.3 * sd))
+
+    elif spec.type == PerturbationType.MOTION_BLUR:
+        k = params["kernel_size"]
+        # keep odd kernel sizes
+        k2 = int(round(rng.uniform(0.8 * k, 1.2 * k)))
+        params["kernel_size"] = k2 if k2 % 2 == 1 else k2 + 1
+        params["angle"] = rng.uniform(0, 180)
+
+    elif "kernel_size" in params:
+        k = params["kernel_size"]
+        k2 = int(round(rng.uniform(0.8 * k, 1.2 * k)))
+        params["kernel_size"] = k2 if k2 % 2 == 1 else k2 + 1
+
+    elif "strength" in params:
+        s = params["strength"]
+        params["strength"] = max(0.0, rng.uniform(0.7 * s, 1.3 * s))
+
+    elif "factor" in params:
+        f = params["factor"]
+        params["factor"] = max(0.0, rng.uniform(0.9 * f, 1.1 * f))
+
+    elif "pixel_size" in params:
+        px = params["pixel_size"]
+        params["pixel_size"] = max(1, int(round(rng.uniform(0.8 * px, 1.2 * px))))
+
+    elif "quality" in params:
+        q = params["quality"]
+        params["quality"] = int(round(rng.uniform(max(1, q - 10), min(95, q + 10))))
+
+    return params
+
+
+
+
+        
 
 class VidDroneVIDataset(torchDataset):
     def __init__(
@@ -41,8 +171,7 @@ class VidDroneVIDataset(torchDataset):
         # New Settings
         gl_stride=1,
         ignore_regions=False,
-        pertubations=None,
-        pertubations_seed=42,  # If -1 -> random seed
+        perturb: PerturbationSettings = None,
     ):
         super().__init__()
         self.data_dir = data_dir
@@ -55,13 +184,14 @@ class VidDroneVIDataset(torchDataset):
         self.sample_mode = sample_mode
         self.max_epoch_samples = max_epoch_samples
         self.ignore_regions = ignore_regions
-        self.pertubations = pertubations
-        self.pertubations_seed = pertubations_seed
 
         self.annotations = self.build_dataset_from_directory()
         self.gl_stride = max(1, gl_stride)
         self.val = (self.split == "val")
         self.input_dim = img_size
+
+        self.perturb = perturb or PerturbationSettings(enabled=False)
+        self._rng = self.perturb.rng()
 
         assert self.gframe + self.lframe > 0, "gframe and lframe cannot be both zero."
 
@@ -391,6 +521,11 @@ class VidDroneVIDataset(torchDataset):
             else:
                 return res[:self.max_epoch_samples]
 
+
+
+    def apply_perturbation(img, type, **params):
+        raise NotImplementedError
+
     # ------------------------------------------------------------------
     # Label & item helpers
     # ------------------------------------------------------------------
@@ -436,8 +571,8 @@ class VidDroneVIDataset(torchDataset):
             (int(W * r), int(H * r)),
             interpolation=cv2.INTER_LINEAR,
         ).astype(np.uint8)
-
         annos, img_info = self._labels_for(vid, frame_idx)
+
         return img_resized, annos, img_info, rel_path
 
     def __getitem__(self, path):
@@ -448,9 +583,83 @@ class VidDroneVIDataset(torchDataset):
         img, target, img_info, rel_path = self.pull_item(path)
         if self.preproc is not None:
             img, target = self.preproc(img, target, self.img_size)
+
+        if self.perturb.enabled:
+            if img.ndim == 3 and img.shape[0] in (1, 3, 4):
+                img = np.transpose(img, (1, 2, 0))  # (H, W, C)
+            img = np.ascontiguousarray(img)
+       
+            specs = [s for s in self.perturb.specs if s.active]
+            if self.perturb.shuffle_order:
+                self._rng.shuffle(specs)
+
+            for s in specs:
+                if self._rng.random() > s.p:
+                    continue
+                params = resolve_params(s, self._rng)
+                img = self.apply_perturbation(img, s.type, **params)
+                  # If your pipeline expects CHW afterward, transpose back:
+            img = np.transpose(img, (2, 0, 1))      # (C, H, W)
+            img = np.ascontiguousarray(img)
         return img, target, img_info, rel_path
     
+    def apply_perturbation(self, img, typ: PerturbationType, **params: PerturbationSettings):
+        
 
+        if typ == PerturbationType.GAUSSIAN_NOISE:
+            std_dev = params.get("std_dev", 0.05)
+            noise = np.random.normal(0, std_dev * 255, img.shape).astype(np.float32)
+            img = img.astype(np.float32) + noise
+            img = np.clip(img, 0, 255).astype(np.uint8)
+            return img
+        if typ == PerturbationType.DEFOCUS_BLUR:
+            kernel_size = params.get("kernel_size", 7)
+            kernel = np.zeros((kernel_size, kernel_size), dtype=np.float32)
+            cv2.circle(kernel, (kernel_size // 2, kernel_size // 2), kernel_size // 2, 1, -1)
+            kernel /= np.sum(kernel)
+            img = cv2.filter2D(img, -1, kernel)
+            return img
+        if typ == PerturbationType.MOTION_BLUR:
+            kernel_size = params.get("kernel_size", 15)
+            angle = params.get("angle", 0.0)
+            kernel = np.zeros((kernel_size, kernel_size), dtype=np.float32)
+            xs = np.linspace(-kernel_size // 2, kernel_size // 2, kernel_size)
+            ys = np.tan(np.deg2rad(angle)) * xs
+            for i in range(kernel_size):
+                x = int(xs[i] + kernel_size // 2)
+                y = int(ys[i] + kernel_size // 2)
+                if 0 <= x < kernel_size and 0 <= y < kernel_size:
+                    kernel[y, x] = 1
+            kernel /= np.sum(kernel)
+            img = cv2.filter2D(img, -1, kernel)
+            return img
+        if typ == PerturbationType.BRIGHTNESS_CHANGE:
+            factor = params.get("factor", 1.25)
+            img = img.astype(np.float32) * factor
+            img = np.clip(img, 0, 255).astype(np.uint8)
+            return img
+        if typ == PerturbationType.CONTRAST_CHANGE:
+            factor = params.get("factor", 1.25)
+            mean = np.mean(img, axis=(0, 1), keepdims=True)
+            img = (img.astype(np.float32) - mean) * factor + mean
+            img = np.clip(img, 0, 255).astype(np.uint8)
+            return img
+        if typ == PerturbationType.PIXELATION:
+            pixel_size = params.get("pixel_size", 8)
+            h, w = img.shape[:2]
+            temp = cv2.resize(img, (w // pixel_size, h // pixel_size), interpolation=cv2.INTER_LINEAR)
+            img = cv2.resize(temp, (w, h), interpolation=cv2.INTER_NEAREST)
+            return img
+        if typ == PerturbationType.JPEG_COMPRESSION:
+            quality = params.get("quality", 50)
+            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
+            _, encimg = cv2.imencode('.jpg', img, encode_param)
+            img = cv2.imdecode(encimg, 1)
+            return img
+        raise ValueError(f"Unsupported perturbation type: {typ}")
+
+
+    
 
 class VisdroneDataset(Dataset):
     """

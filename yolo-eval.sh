@@ -13,11 +13,9 @@ echo "Starting eval..."
 echo ""
 python tools/eval.py \
   -f exps/customed_example/yolox_swinbase.py\
-  -c /home/mozi/TemporalAttentionPlayground/YOLOV/YOLOX_outputs/yolox_swinbase/last_epoch_ckpt.pth\
-  -b 2 \
+  -c /home/mozi/weights/yolov/yolox-swinbase_w7.pth\
+  -b 4 \
   -d 1 \
-  --conf 0.001 \
-  --nms 0.7 \
   --fp16 \
   --fuse
 

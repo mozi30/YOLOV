@@ -105,12 +105,12 @@ class Trainer:
         if self.rank == 0:
             os.makedirs(self.file_name, exist_ok=True)
 
-        setup_logger(
-            self.file_name,
-            distributed_rank=self.rank,
-            filename="train_log.txt",
-            mode="a",
-        )
+        # setup_logger(
+        #     self.file_name,
+        #     distributed_rank=self.rank,
+        #     filename="train_log.txt",
+        #     mode="a",
+        # )
 
         if val:
             self.evaluate()
@@ -397,8 +397,8 @@ class Trainer:
         self.best_ap = max(self.best_ap, ap50_95)
 
     def evaluate(self):
-        logger.info("args: {}".format(self.args))
-        logger.info("exp value:\n{}".format(self.exp))
+        # logger.info("args: {}".format(self.args))
+        # logger.info("exp value:\n{}".format(self.exp))
 
         # model related init
         torch.cuda.set_device(self.local_rank)

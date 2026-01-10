@@ -920,7 +920,7 @@ def get_vid_loader(batch_size,data_num_workers,dataset):
     return vid_loader
 
 def vid_val_loader(batch_size,data_num_workers,dataset,):
-    sampler = VIDBatchSampler_Test(TestSampler(dataset),batch_size,drop_last=False)
+    sampler = VIDBatchSampler(TestSampler(dataset),batch_size,drop_last=False)
     dataloader_kwargs = {
         "num_workers": data_num_workers,
         "pin_memory": True,

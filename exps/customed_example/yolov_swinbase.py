@@ -3,7 +3,7 @@
 
 import os
 import torch.nn as nn
-from yolox.data.datasets.visdrone import VidDroneVIDataset
+from yolox.data.datasets.visdrone import PerturbSpec, PerturbationSettings, PerturbationType, Severity, VidDroneVIDataset
 from exps.yolov.yolov_base import Exp as MyExp
 from yolox.data.data_augment import TrainTransform, TrainTransform, Vid_Val_Transform
 import torch
@@ -267,6 +267,17 @@ class Exp(MyExp):
         #     tnum=self.tnum_train,
         # )
 
+        perturb = PerturbationSettings(
+            enabled=True,
+            seed=123,
+            shuffle_order=True,
+            specs=[
+                PerturbSpec(PerturbationType.GAUSSIAN_NOISE, active=True,  severity=Severity.LOW,  p=1),
+                #PerturbSpec(PerturbationType.MOTION_BLUR,    active=False, severity=Severity.LOW,  p=0.3),
+                #PerturbSpec(PerturbationType.JPEG_COMPRESSION,active=True, severity=Severity.HIGH, p=1.0, dynamic=True),
+            ],
+        )
+
         dataset = VidDroneVIDataset(
             data_dir=self.data_dir,
             split="train",
@@ -281,6 +292,7 @@ class Exp(MyExp):
             sample_mode="gl",
             max_epoch_samples=self.max_epoch_samples,
             gl_stride = 5, 
+            perturb=perturb,
         )
 
         dataset = vid.get_trans_loader(batch_size=batch_size, data_num_workers=4, dataset=dataset)

@@ -10,10 +10,12 @@ import json
 import tempfile
 import time
 from loguru import logger
+import numpy as np
 from tqdm import tqdm
 from yolox.evaluators.coco_evaluator import per_class_AR_table, per_class_AP_table
 import torch
 import pycocotools.coco
+import cv2
 
 from yolox.utils import (
     gather,
@@ -31,7 +33,32 @@ vid_classes = (
 )
 # ===================================
 
+    
+def to_cv2_img(img):
+    # torch -> numpy
+    if isinstance(img, torch.Tensor):
+        img = img.detach().cpu().numpy()
 
+    # make contiguous
+    img = np.ascontiguousarray(img)
+
+    # if CHW -> HWC
+    if img.ndim == 3 and img.shape[0] in (1, 3) and img.shape[0] != img.shape[-1]:
+        img = img.transpose(1, 2, 0)
+
+    # if grayscale single channel shape (H,W,1) -> (H,W)
+    if img.ndim == 3 and img.shape[2] == 1:
+        img = img[:, :, 0]
+
+    # convert float [0,1] or [0,255] -> uint8
+    if img.dtype != np.uint8:
+        # common case: normalized float 0..1
+        if img.max() <= 1.0:
+            img = (img * 255.0).clip(0, 255).astype(np.uint8)
+        else:
+            img = img.clip(0, 255).astype(np.uint8)
+
+    return img
 # from yolox.data.datasets.vid_classes import Arg_classes as  vid_classes
 
 class VIDEvaluator:
@@ -161,7 +188,6 @@ class VIDEvaluator:
         for cur_iter, (imgs, _, info_imgs, label, path, time_embedding) in enumerate(
                 progress_bar(self.dataloader)
         ):
-
             with torch.no_grad():
                 imgs = imgs.type(tensor_type)
                 # skip the the last iters since batchsize might be not enough for batch inference

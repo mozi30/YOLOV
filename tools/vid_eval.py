@@ -5,13 +5,14 @@
 import argparse
 import random
 import warnings
+from yolox.utils.logger import setup_logger
 from loguru import logger
 import os
-
+    
 import torch
 import torch.backends.cudnn as cudnn
 
-from yolox.data.datasets.visdrone import VidDroneVIDataset
+from yolox.data.datasets.visdrone import PerturbSpec, PerturbationSettings, PerturbationType, Severity, VidDroneVIDataset
 from yolox.core import launch
 from yolox.core.vid_trainer import Trainer
 
@@ -98,13 +99,16 @@ def make_parser():
         default=None,
         nargs=argparse.REMAINDER,
     )
+    parser.add_argument('--perturbation', default=False, action="store_true",help='use perturbation for eval')
+    parser.add_argument('--select_perturbation', default=PerturbationType.GAUSSIAN_NOISE, help='select perturbation type for eval')
+    parser.add_argument('--severity', default=Severity.LOW, help='perturbation severity for eval')
 
     parser.add_argument('--lframe', default=0,type=int, help='local frame num')
     parser.add_argument('--gframe', default=32,type=int, help='global frame num')
     parser.add_argument('--mode', default='random', help='frame sample mode')
     parser.add_argument('--tnum', default=-1, help='vid test sequences')
     parser.add_argument('--formal', default=False, action="store_true",help='vid test sequences')
-
+    parser.add_argument('--stride', default=1,type=int, help='global-local frame stride for eval')
     return parser
 
 
@@ -126,6 +130,7 @@ def main(exp, args):
     cudnn.benchmark = True
     lframe = int(args.lframe)
     gframe = int(args.gframe)
+    stride = int(args.stride)
 
     # dataset_val = vid.VIDDataset(file_path='./yolox/data/datasets/val_seq.npy',
     #                              img_size=(args.tsize, args.tsize), preproc=Vid_Val_Transform(), lframe=lframe,
@@ -146,19 +151,56 @@ def main(exp, args):
     exp.gframe_val = gframe
     exp.lframe_val = lframe
     assert exp.lframe_val + exp.gframe_val == args.batch_size, "Error: exp.lframe_val + exp.gframe_val should be equal to batch_size!!!"
-    # dataset_val = vid.VisDroneVID(
-    #         data_dir=exp.data_dir,
-    #         json_file=os.path.join(exp.data_dir, exp.val_ann),
-    #         name="val",
-    #         img_size=exp.test_size,
-    #         preproc=Vid_Val_Transform(),
-    #         lframe=exp.lframe_val,
-    #         gframe=exp.gframe_val,
-    #         mode="random",
-    #         val=True,
-    #         tnum=exp.tnum_val,
-    #     )
+    file_name = os.path.join(exp.output_dir, args.experiment_name)
+    setup_logger(
+        file_name,
+        distributed_rank=0,
+        filename="train_log.txt",
+        mode="a",
+    )
+    logger.info("Building dataset...")
+    logger.info("Val gframe: {}, lframe: {}".format(exp.gframe_val, exp.lframe_val))
+    logger.info("Val stride: {}".format(stride))
+    logger.info("Val batch size: {}".format(args.batch_size))
+    logger.info("Perturbation eval: {}".format(args.perturbation))
+    logger.info("Selected perturbation: {}".format(args.select_perturbation))
+    logger.info("Perturbation severity: {}".format(args.severity))
 
+    if args.perturbation:
+        selected_perturbation = args.select_perturbation
+        severity = args.severity
+
+
+        print("Using perturbation for eval!")
+        perturb = PerturbationSettings(
+            enabled=True,
+            seed=123,
+            shuffle_order=True,
+            specs=[
+                PerturbSpec(selected_perturbation, active=True, severity=severity, p=1),
+            ],
+        )
+    else:
+        perturb = PerturbationSettings(enabled=False)
+
+
+
+    # perturb = PerturbationSettings(
+    #         enabled=True,
+    #         seed=123,
+    #         shuffle_order=True,
+    #         specs=[
+    #             PerturbSpec(PerturbationType.GAUSSIAN_NOISE, active=False,  severity=Severity.HIGH,  p=1),
+    #             PerturbSpec(PerturbationType.MOTION_BLUR,    active=False, severity=Severity.HIGH,  p=1),
+    #             PerturbSpec(PerturbationType.JPEG_COMPRESSION,active=False, severity=Severity.MED, p=1),
+    #             PerturbSpec(PerturbationType.BRIGHTNESS_CHANGE,active=False, severity=Severity.LOW,  p=1),
+    #             PerturbSpec(PerturbationType.CONTRAST_CHANGE,  active=False, severity=Severity.MED,  p=1),
+    #             PerturbSpec(PerturbationType.PIXELATION,     active=False, severity=Severity.LOW,  p=1),
+    #             PerturbSpec(PerturbationType.DEFOCUS_BLUR,    active=True, severity=Severity.LOW,  p=1),
+    #         ],
+    #     )
+    
+    
     dataset_val = VidDroneVIDataset(
             data_dir=exp.data_dir,
             split="val",
@@ -168,10 +210,11 @@ def main(exp, args):
             gframe=exp.gframe_val,
             sample_mode="gl",
             max_epoch_samples=-1,
-            gl_stride = 10,
+            gl_stride = stride,
+            perturb=perturb,
         )
 
-    val_loader = vid.vid_val_loader(batch_size=exp.lframe_val + exp.gframe_val, data_num_workers=8, dataset=dataset_val, )
+    val_loader = vid.vid_val_loader(batch_size=exp.lframe_val + exp.gframe_val, data_num_workers=1, dataset=dataset_val, )
 
 
     print("Gframe and Lframe for eval: ", exp.gframe_val, exp.lframe_val)
