@@ -18,7 +18,7 @@ class Exp(MyExp):
 
         # VisDrone dataset configuration
         self.num_classes = 10  # VisDrone has 10 classes
-        self.data_dir = "/home/mozi/datasets/visdrone/yolov"
+        self.data_dir = "/root/datasets/visdrone/yolov"
         self.train_ann = "imagenet_vid_train_coco.json"
         self.val_ann = "imagenet_vid_val_coco.json"
 
@@ -42,7 +42,7 @@ class Exp(MyExp):
         self.test_size  = (544, 960)
 
         self.eval_interval = 1
-
+        self.output_dir = "./perturbation-single"
         # -------------------------------
         # Augmentation / multiscale
         # -------------------------------
@@ -208,7 +208,7 @@ class Exp(MyExp):
 
         return train_loader
 
-    def get_eval_loader(self, batch_size, is_distributed, testdev=False, legacy=False):
+    def get_eval_loader(self, batch_size, is_distributed, testdev=False, legacy=False, perturb=None):
         from yolox.data import ValTransform
         from yolox.data.datasets.visdrone import VisdroneDataset
 
@@ -218,6 +218,7 @@ class Exp(MyExp):
             name="val",
             img_size=self.test_size,
             preproc=ValTransform(legacy=legacy),
+            perturbation=perturb,
         )
 
         if is_distributed:
@@ -238,9 +239,9 @@ class Exp(MyExp):
 
         return val_loader
 
-    def get_evaluator(self, batch_size, is_distributed, testdev=False, legacy=False):
+    def get_evaluator(self, batch_size, is_distributed, testdev=False, legacy=False, perturb=None):
         from yolox.evaluators import COCOEvaluator
-        val_loader = self.get_eval_loader(batch_size, is_distributed, testdev, legacy)
+        val_loader = self.get_eval_loader(batch_size, is_distributed, testdev, legacy, perturb)
         evaluator = COCOEvaluator(
             dataloader=val_loader,
             img_size=self.test_size,

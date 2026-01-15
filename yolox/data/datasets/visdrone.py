@@ -509,6 +509,7 @@ class VidDroneVIDataset(torchDataset):
         if self.val:
             random.seed(42)
             random.shuffle(res)
+            print("Max epoch samples:", self.max_epoch_samples)
             if self.max_epoch_samples == -1:
                 return res
             else:
@@ -592,7 +593,6 @@ class VidDroneVIDataset(torchDataset):
             specs = [s for s in self.perturb.specs if s.active]
             if self.perturb.shuffle_order:
                 self._rng.shuffle(specs)
-
             for s in specs:
                 if self._rng.random() > s.p:
                     continue
@@ -605,7 +605,7 @@ class VidDroneVIDataset(torchDataset):
     
     def apply_perturbation(self, img, typ: PerturbationType, **params: PerturbationSettings):
         
-
+        
         if typ == PerturbationType.GAUSSIAN_NOISE:
             std_dev = params.get("std_dev", 0.05)
             noise = np.random.normal(0, std_dev * 255, img.shape).astype(np.float32)
@@ -675,6 +675,7 @@ class VisdroneDataset(Dataset):
         img_size=(416, 416),
         preproc=None,
         cache=False,
+        perturbation: PerturbationSettings = None,
     ):
         """
         VisDrone dataset initialization. Annotation data are read into memory by COCO API.
@@ -697,6 +698,8 @@ class VisdroneDataset(Dataset):
         self.name = name
         self.img_size = img_size
         self.preproc = preproc
+        self.perturbation = perturbation or PerturbationSettings(enabled=False)
+        self._rng = self.perturbation.rng()
         
         # Load COCO annotations
         ann_file = os.path.join(self.data_dir, "annotations", self.json_file)
@@ -836,6 +839,72 @@ class VisdroneDataset(Dataset):
 
         return img, res.copy(), img_info, np.array([id_])
 
+    def apply_perturbation(self, img):
+            if self.perturbation.enabled:
+
+                specs = [s for s in self.perturbation.specs if s.active]
+                if self.perturbation.shuffle_order:
+                    self._rng.shuffle(specs)
+
+                for s in specs:
+                    if self._rng.random() > s.p:
+                        continue
+                    params = resolve_params(s, self._rng)
+                    typ = s.type
+                    if typ == PerturbationType.GAUSSIAN_NOISE:
+                        std_dev = params.get("std_dev", 0.05)
+                        noise = np.random.normal(0, std_dev * 255, img.shape).astype(np.float32)
+                        img = img.astype(np.float32) + noise
+                        img = np.clip(img, 0, 255).astype(np.uint8)
+                        return img
+                    if typ == PerturbationType.DEFOCUS_BLUR:
+                        kernel_size = params.get("kernel_size", 7)
+                        kernel = np.zeros((kernel_size, kernel_size), dtype=np.float32)
+                        cv2.circle(kernel, (kernel_size // 2, kernel_size // 2), kernel_size // 2, 1, -1)
+                        kernel /= np.sum(kernel)
+                        img = cv2.filter2D(img, -1, kernel)
+                        return img
+                    if typ == PerturbationType.MOTION_BLUR:
+                        kernel_size = params.get("kernel_size", 15)
+                        angle = params.get("angle", 0.0)
+                        kernel = np.zeros((kernel_size, kernel_size), dtype=np.float32)
+                        xs = np.linspace(-kernel_size // 2, kernel_size // 2, kernel_size)
+                        ys = np.tan(np.deg2rad(angle)) * xs
+                        for i in range(kernel_size):
+                            x = int(xs[i] + kernel_size // 2)
+                            y = int(ys[i] + kernel_size // 2)
+                            if 0 <= x < kernel_size and 0 <= y < kernel_size:
+                                kernel[y, x] = 1
+                        kernel /= np.sum(kernel)
+                        img = cv2.filter2D(img, -1, kernel)
+                        return img
+                    if typ == PerturbationType.BRIGHTNESS_CHANGE:
+                        factor = params.get("factor", 1.25)
+                        img = img.astype(np.float32) * factor
+                        img = np.clip(img, 0, 255).astype(np.uint8)
+                        return img
+                    if typ == PerturbationType.CONTRAST_CHANGE:
+                        factor = params.get("factor", 1.25)
+                        mean = np.mean(img, axis=(0, 1), keepdims=True)
+                        img = (img.astype(np.float32) - mean) * factor + mean
+                        img = np.clip(img, 0, 255).astype(np.uint8)
+                        return img
+                    if typ == PerturbationType.PIXELATION:
+                        pixel_size = params.get("pixel_size", 8)
+                        h, w = img.shape[:2]
+                        temp = cv2.resize(img, (w // pixel_size, h // pixel_size), interpolation=cv2.INTER_LINEAR)
+                        img = cv2.resize(temp, (w, h), interpolation=cv2.INTER_NEAREST)
+                        return img
+                    if typ == PerturbationType.JPEG_COMPRESSION:
+                        quality = params.get("quality", 50)
+                        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
+                        _, encimg = cv2.imencode('.jpg', img, encode_param)
+                        img = cv2.imdecode(encimg, 1)
+                        return img
+                    raise ValueError(f"Unsupported perturbation type: {typ}")
+                    # If your pipeline expects CHW afterward, transpose back:
+            return img
+
     @Dataset.mosaic_getitem
     def __getitem__(self, index):
         """
@@ -857,6 +926,7 @@ class VisdroneDataset(Dataset):
             img_id (int): same as the input index. Used for evaluation.
         """
         img, target, img_info, img_id = self.pull_item(index)
+        img = self.apply_perturbation(img)
 
         if self.preproc is not None:
             img, target = self.preproc(img, target, self.input_dim)

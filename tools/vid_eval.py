@@ -162,9 +162,7 @@ def main(exp, args):
     logger.info("Val gframe: {}, lframe: {}".format(exp.gframe_val, exp.lframe_val))
     logger.info("Val stride: {}".format(stride))
     logger.info("Val batch size: {}".format(args.batch_size))
-    logger.info("Perturbation eval: {}".format(args.perturbation))
-    logger.info("Selected perturbation: {}".format(args.select_perturbation))
-    logger.info("Perturbation severity: {}".format(args.severity))
+
 
     if args.perturbation:
         selected_perturbation = args.select_perturbation
@@ -172,12 +170,30 @@ def main(exp, args):
 
 
         print("Using perturbation for eval!")
+        logger.info("Perturbation eval: {}".format(args.perturbation))
+        logger.info("Selected perturbation: {}".format(args.select_perturbation))
+        logger.info("Perturbation severity: {}".format(args.severity))
+        logger.info("Perturbation probability: {}".format(0.5))
+        # perturb = PerturbationSettings(
+        #     enabled=True,
+        #     seed=123,
+        #     shuffle_order=True,
+        #     specs=[
+        #         PerturbSpec(selected_perturbation, active=True, severity=severity, p=1),
+        #     ],
+        # )
         perturb = PerturbationSettings(
             enabled=True,
             seed=123,
             shuffle_order=True,
             specs=[
-                PerturbSpec(selected_perturbation, active=True, severity=severity, p=1),
+                PerturbSpec(PerturbationType.GAUSSIAN_NOISE, active=True,  severity=Severity.HIGH,  p=0.082),
+                PerturbSpec(PerturbationType.MOTION_BLUR,    active=True, severity=Severity.HIGH,  p=0.082),
+                PerturbSpec(PerturbationType.JPEG_COMPRESSION,active=True, severity=Severity.HIGH, p=0.082),
+                PerturbSpec(PerturbationType.BRIGHTNESS_CHANGE,active=True, severity=Severity.HIGH,  p=0.082),
+                PerturbSpec(PerturbationType.CONTRAST_CHANGE,  active=True, severity=Severity.HIGH,  p=0.082),
+                PerturbSpec(PerturbationType.PIXELATION,     active=True, severity=Severity.HIGH,  p=0.082),
+                PerturbSpec(PerturbationType.DEFOCUS_BLUR,    active=True, severity=Severity.HIGH,  p=0.082),
             ],
         )
     else:
@@ -185,20 +201,7 @@ def main(exp, args):
 
 
 
-    # perturb = PerturbationSettings(
-    #         enabled=True,
-    #         seed=123,
-    #         shuffle_order=True,
-    #         specs=[
-    #             PerturbSpec(PerturbationType.GAUSSIAN_NOISE, active=False,  severity=Severity.HIGH,  p=1),
-    #             PerturbSpec(PerturbationType.MOTION_BLUR,    active=False, severity=Severity.HIGH,  p=1),
-    #             PerturbSpec(PerturbationType.JPEG_COMPRESSION,active=False, severity=Severity.MED, p=1),
-    #             PerturbSpec(PerturbationType.BRIGHTNESS_CHANGE,active=False, severity=Severity.LOW,  p=1),
-    #             PerturbSpec(PerturbationType.CONTRAST_CHANGE,  active=False, severity=Severity.MED,  p=1),
-    #             PerturbSpec(PerturbationType.PIXELATION,     active=False, severity=Severity.LOW,  p=1),
-    #             PerturbSpec(PerturbationType.DEFOCUS_BLUR,    active=True, severity=Severity.LOW,  p=1),
-    #         ],
-    #     )
+    
     
     
     dataset_val = VidDroneVIDataset(
@@ -209,7 +212,7 @@ def main(exp, args):
             lframe=exp.lframe_val,
             gframe=exp.gframe_val,
             sample_mode="gl",
-            max_epoch_samples=-1,
+            max_epoch_samples=500,
             gl_stride = stride,
             perturb=perturb,
         )

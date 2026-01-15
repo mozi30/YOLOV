@@ -22,6 +22,7 @@ from yolox.utils import (
     get_model_info,
     setup_logger
 )
+from yolox.data.datasets.visdrone import PerturbSpec, PerturbationSettings, PerturbationType, Severity
 
 
 def make_parser():
@@ -109,6 +110,9 @@ def make_parser():
         default=None,
         nargs=argparse.REMAINDER,
     )
+    parser.add_argument('--perturbation', default=False, action="store_true",help='use perturbation for eval')
+    parser.add_argument('--select_perturbation', default=PerturbationType.GAUSSIAN_NOISE, help='select perturbation type for eval')
+    parser.add_argument('--severity', default=Severity.LOW, help='perturbation severity for eval')
     return parser
 
 
@@ -149,7 +153,44 @@ def main(exp, args, num_gpu):
     #logger.info("Model Summary: {}".format(get_model_info(model, exp.test_size)))
     #logger.info("Model Structure:\n{}".format(str(model)))
 
-    evaluator = exp.get_evaluator(args.batch_size, is_distributed, args.test, args.legacy)
+    logger.info("Building dataset...")
+    logger.info("Val batch size: {}".format(args.batch_size))
+    logger.info("Perturbation eval: {}".format(args.perturbation))
+    logger.info("Selected perturbation: {}".format(args.select_perturbation))
+    logger.info("Perturbation severity: {}".format(args.severity))
+    logger.info("Perturbation probability: {}".format(0.75))
+
+    if args.perturbation:
+        selected_perturbation = args.select_perturbation
+        severity = args.severity
+
+        print("Using perturbation for eval!")
+        # perturb = PerturbationSettings(
+        #     enabled=True,
+        #     seed=123,
+        #     shuffle_order=True,
+        #     specs=[
+        #         PerturbSpec(selected_perturbation, active=True, severity=severity, p=1),
+        #     ],
+        # )
+        perturb = PerturbationSettings(
+            enabled=True,
+            seed=123,
+            shuffle_order=True,
+            specs=[
+                PerturbSpec(PerturbationType.GAUSSIAN_NOISE, active=True,  severity=Severity.HIGH,  p=0.208),
+                PerturbSpec(PerturbationType.MOTION_BLUR,    active=True, severity=Severity.HIGH,  p=0.208),
+                PerturbSpec(PerturbationType.JPEG_COMPRESSION,active=True, severity=Severity.HIGH, p=0.208),
+                PerturbSpec(PerturbationType.BRIGHTNESS_CHANGE,active=True, severity=Severity.HIGH,  p=0.208),
+                PerturbSpec(PerturbationType.CONTRAST_CHANGE,  active=True, severity=Severity.HIGH,  p=0.208),
+                PerturbSpec(PerturbationType.PIXELATION,     active=True, severity=Severity.HIGH,  p=0.208),
+                PerturbSpec(PerturbationType.DEFOCUS_BLUR,    active=True, severity=Severity.HIGH,  p=0.082),
+            ],
+        )
+    else:
+        perturb = PerturbationSettings(enabled=False)
+
+    evaluator = exp.get_evaluator(args.batch_size, is_distributed, args.test, args.legacy, perturb)
     evaluator.per_class_AP = True
     evaluator.per_class_AR = True
 
